@@ -12,6 +12,14 @@ DoiteAurasDB.spells   = DoiteAurasDB.spells   or {}
 DoiteAurasDB.cache = DoiteAurasDB.cache or {}
 DoiteAuras = DoiteAuras or {}
 
+-- Always return a valid name->texture cache table
+local function DA_Cache()
+  DoiteAurasDB = DoiteAurasDB or {}
+  DoiteAurasDB.cache = DoiteAurasDB.cache or {}
+  return DoiteAurasDB.cache
+end
+
+
 -- Persistent store for group layout computed positions
 _G["DoiteGroup_Computed"]       = _G["DoiteGroup_Computed"]       or {}
 _G["DoiteGroup_LastLayoutTime"] = _G["DoiteGroup_LastLayoutTime"] or 0
@@ -21,8 +29,7 @@ _G["DoiteGroup_LastLayoutTime"] = _G["DoiteGroup_LastLayoutTime"] or 0
 -- Works on Turtle/1.12 via GetSpellName / GetSpellTexture.
 
 local function DoiteAuras_RebuildSpellTextureCache()
-    if not DoiteAurasDB or not DoiteAurasDB.cache then return end
-    local cache = DoiteAurasDB.cache
+    local cache = DA_Cache()
     -- Scan all tabs/slots once and remember textures by NAME (rank-agnostic, matches your displayName use)
     for tab = 1, (GetNumSpellTabs() or 0) do
         local _, _, offset, numSlots = GetSpellTabInfo(tab)
@@ -67,23 +74,34 @@ local function TitleCase(str)
     if not str then return "" end
     str = tostring(str)
     local exceptions = {
-		["of"]=true, ["and"]=true, ["the"]=true, ["for"]=true,
-		["in"]=true, ["on"]=true, ["to"]=true, ["a"]=true,
-		["an"]=true, ["with"]=true, ["by"]=true, ["at"]=true
-	}
+        ["of"]=true, ["and"]=true, ["the"]=true, ["for"]=true,
+        ["in"]=true, ["on"]=true, ["to"]=true, ["a"]=true,
+        ["an"]=true, ["with"]=true, ["by"]=true, ["at"]=true
+    }
     local result, first = "", true
     for word in string.gmatch(str, "%S+") do
-        local lower = string.lower(word)
+        -- If the word starts with "(", force-capitalize the first letter after "(".
+        local startsParen = (string.sub(word, 1, 1) == "(")
+        local leading = startsParen and "(" or ""
+        local core = startsParen and string.sub(word, 2) or word
+
+        local lowerCore = string.lower(core or "")
+        local c = string.sub(core or "", 1, 1) or ""
+        local rest = string.sub(core or "", 2) or ""
+
         if first then
-            local c, rest = string.sub(word,1,1) or "", string.sub(word,2) or ""
-            result = result .. string.upper(c) .. string.lower(rest) .. " "
+            -- Always capitalize the very first word
+            result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
             first = false
         else
-            if exceptions[lower] then
-                result = result .. lower .. " "
+            if startsParen then
+                -- First word inside parentheses: force-capitalize regardless of exceptions
+                result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+            elseif exceptions[lowerCore] then
+                -- Normal small-word behavior
+                result = result .. lowerCore .. " "
             else
-                local c, rest = string.sub(word,1,1) or "", string.sub(word,2) or ""
-                result = result .. string.upper(c) .. string.lower(rest) .. " "
+                result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
             end
         end
     end
@@ -185,7 +203,7 @@ if sep.SetVertexColor then sep:SetVertexColor(1,1,1,0.25) end
 -- Intro text
 local intro = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 intro:SetPoint("TOPLEFT", frame, "TOPLEFT", 20, -40)
-intro:SetText("Enter the EXACT name or ID of the ability, buff or debuff.")
+intro:SetText("Enter the EXACT name of the ability, buff or debuff.")
 
 -- Close button
 local closeBtn = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
@@ -284,7 +302,7 @@ guide:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 20, 20)
 guide:SetWidth(315)
 guide:SetJustifyH("LEFT")
 if guide.SetTextColor then guide:SetTextColor(0.7,0.7,0.7) end
-guide:SetText("Guide: DoiteAuras lets you show abilities, buffs, and debuffs only when you need them. Add an icon, choose type (Ability, Buff, Debuff), set priority and conditions. Use Usable/Not on CD for abilities, or Found/Missing for auras. Pick combat state (in/out), target (self/help/harm), visuals (glow/grey) and more. Aura icons save automatically and cache textures once seen.")
+guide:SetText("Guide: DoiteAuras shows only what matters—abilities, buffs, debuffs, items, or bars—when you actually need them. Add an icon or bar, pick its type, and define when it appears using simple conditions like cooldown, aura state, combat, or target. Everything updates automatically, remembers textures once seen, and keeps your UI clean and reactive.")
 
 -- storage
 local spellButtons, icons = {}, {}
@@ -608,11 +626,13 @@ local function RefreshIcons()
             end
         end
 
-        -- Texture handling (with saved iconTexture fallback)
-        local displayName = (data and (data.displayName or data.name)) or key
-        local texToUse = entry.tex
-		  or DoiteAurasDB.cache[displayName]
+		-- Texture handling (with saved iconTexture fallback)
+		local cache = DA_Cache()
+		local displayName = (data and (data.displayName or data.name)) or key
+		local texToUse = entry.tex
+		  or cache[displayName]
 		  or (data and data.iconTexture)
+
 
 		if not texToUse and data and data.type == "Ability" then
 		  local slot = FindSpellBookSlot(displayName)
@@ -621,7 +641,7 @@ local function RefreshIcons()
 
 		if texToUse then
 		  -- Keep a name-level cache and also stamp it on this entry so it persists
-		  DoiteAurasDB.cache[displayName] = texToUse
+		  cache[displayName] = texToUse
 		  if data and not data.iconTexture then
 			data.iconTexture = texToUse
 		  end
@@ -793,20 +813,21 @@ addBtn:SetScript("OnClick", function()
   if t == "Ability" then
     local slot = FindSpellBookSlot(name)
     if slot then
-      local tex = GetSpellTexture(slot, BOOKTYPE_SPELL)
-      if tex then
-        DoiteAurasDB.cache[name] = tex
-        DoiteAurasDB.spells[key].iconTexture = tex
-      end
-    end
+	  local tex = GetSpellTexture(slot, BOOKTYPE_SPELL)
+	  if tex then
+		local cache = DA_Cache()
+		cache[name] = tex
+		DoiteAurasDB.spells[key].iconTexture = tex
+	  end
+	end
   end
 
   -- 2) If we’ve ever seen this name before (ability or aura), reuse known texture
   if not DoiteAurasDB.spells[key].iconTexture then
-    local cached = DoiteAurasDB.cache[name]
-    if cached then
-      DoiteAurasDB.spells[key].iconTexture = cached
-    else
+    local cached = DA_Cache()[name]
+	if cached then
+	  DoiteAurasDB.spells[key].iconTexture = cached
+	else
       -- 3) Fallback: copy iconTexture from any sibling that already has one
       for sk, sd in IterSiblings(name, t) do
         if sd and sd.iconTexture then

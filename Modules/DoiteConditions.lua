@@ -22,6 +22,30 @@ local UnitExists    = UnitExists
 local UnitIsFriend  = UnitIsFriend
 local UnitCanAttack = UnitCanAttack
 local UnitIsUnit    = UnitIsUnit
+local _lastAuraScanAt = 0
+
+-- === Spell index cache (must be defined before any usage) ===
+local SpellIndexCache = {}  -- [spellName] = index or false (if not found)
+
+local function _GetSpellIndexByName(spellName)
+    if not spellName then return nil end
+    local cached = SpellIndexCache[spellName]
+    if cached ~= nil then
+        return (cached ~= false) and cached or nil
+    end
+    local i = 1
+    while i <= 200 do
+        local s = GetSpellName(i, BOOKTYPE_SPELL)
+        if not s then break end
+        if s == spellName then
+            SpellIndexCache[spellName] = i
+            return i
+        end
+        i = i + 1
+    end
+    SpellIndexCache[spellName] = false
+    return nil
+end
 
 
 local dirty_ability = false
@@ -33,6 +57,33 @@ local DG = _G["DoiteGlow"]
 -- While the Doite edit panel is open, this global is set by DoiteEdit.lua
 local function _IsKeyUnderEdit(k)
     return (k and _G["DoiteEdit_CurrentKey"] and _G["DoiteEdit_CurrentKey"] == k)
+end
+
+local _trackedByName, _trackedBuiltAt = nil, 0
+local function _GetTrackedByName()
+    local now = GetTime()
+    if _trackedByName and (now - _trackedBuiltAt) < 0.5 then
+        return _trackedByName
+    end
+    local t = {}
+    if DoiteAurasDB and DoiteAurasDB.spells then
+        for key, data in pairs(DoiteAurasDB.spells) do
+            if data and (data.type == "Buff" or data.type == "Debuff") then
+                local nm = data.displayName or data.name
+                if nm and nm ~= "" then
+                    local lst = t[nm]
+                    if not lst then
+                        lst = {}
+                        t[nm] = lst
+                    end
+                    -- Lua 5.0-safe append
+                    table.insert(lst, { key = key, typ = data.type })
+                end
+            end
+        end
+    end
+    _trackedByName, _trackedBuiltAt = t, now
+    return t
 end
 
 -- === Aura snapshot & single tooltip ===
@@ -71,19 +122,8 @@ end
 local function _ScanUnitAuras(unit)
     _EnsureTooltip()
 
-    -- Build a quick lookup: auraName -> { list of keys that track this name }
-    local trackedByName = {}
-    if DoiteAurasDB and DoiteAurasDB.spells then
-        for key, data in pairs(DoiteAurasDB.spells) do
-            if data and (data.type == "Buff" or data.type == "Debuff") then
-                local nm = data.displayName or data.name
-                if nm and nm ~= "" then
-                    if not trackedByName[nm] then trackedByName[nm] = {} end
-                    table.insert(trackedByName[nm], { key = key, typ = data.type })
-                end
-            end
-        end
-    end
+    -- Use the cached lookup: auraName -> { list of keys that track this name }
+    local trackedByName = _GetTrackedByName()
 
     local snap = auraSnapshot[unit]
     if not snap then return end
@@ -100,28 +140,30 @@ local function _ScanUnitAuras(unit)
         if not tn then break end
         buffs[tn] = true
 
-        -- If we track this aura, cache/use the real texture now (1.12-safe)
-        local list = trackedByName[tn]
+        local list = trackedByName and trackedByName[tn]
         if list then
-			local tex = UnitBuff(unit, i)
-			if tex and tn and IconCache[tn] ~= tex then
-				IconCache[tn] = tex
-				DoiteAurasDB.cache[tn] = tex
-				if DoiteAurasDB.spells then
-					for _, info in ipairs(list) do
-						local s = DoiteAurasDB.spells[info.key]
-						if s then s.iconTexture = tex end
-					end
-				end
-				for _, info in ipairs(list) do
-					local f = _G["DoiteIcon_" .. info.key]
-					if f and f.icon and (f.icon:GetTexture() ~= tex) then
-						f.icon:SetTexture(tex)
-					end
-				end
-				-- don't set dirty_aura here; it's already set after the scan
-			end
-		end
+            local tex = UnitBuff(unit, i)
+            if tex and tn and IconCache[tn] ~= tex then
+                IconCache[tn] = tex
+                DoiteAurasDB.cache[tn] = tex
+                if DoiteAurasDB.spells then
+                    local n = table.getn(list)
+                    for j = 1, n do
+                        local info = list[j]
+                        local s = DoiteAurasDB.spells[info.key]
+                        if s then s.iconTexture = tex end
+                    end
+                end
+                local n2 = table.getn(list)
+                for j = 1, n2 do
+                    local info = list[j]
+                    local f = _G["DoiteIcon_" .. info.key]
+                    if f and f.icon and (f.icon:GetTexture() ~= tex) then
+                        f.icon:SetTexture(tex)
+                    end
+                end
+            end
+        end
         i = i + 1
     end
 
@@ -134,33 +176,36 @@ local function _ScanUnitAuras(unit)
         if not tn then break end
         debuffs[tn] = true
 
-        -- If we track this aura, cache/use the real texture now (1.12-safe)
-        local list = trackedByName[tn]
+        local list = trackedByName and trackedByName[tn]
         if list then
             local tex = UnitDebuff(unit, i)
-			if tex and tn then
-				IconCache[tn] = tex
-				DoiteAurasDB.cache[tn] = tex
-				if DoiteAurasDB.spells then
-					for _, info in ipairs(list) do
-						local s = DoiteAurasDB.spells[info.key]
-						if s then s.iconTexture = tex end
-					end
-				end
-				for _, info in ipairs(list) do
-					local f = _G["DoiteIcon_" .. info.key]
-					if f and f.icon and (f.icon:GetTexture() ~= tex) then
-						f.icon:SetTexture(tex)
-					end
-				end
-			end
+            if tex and tn then
+                IconCache[tn] = tex
+                DoiteAurasDB.cache[tn] = tex
+                if DoiteAurasDB.spells then
+                    local n = table.getn(list)
+                    for j = 1, n do
+                        local info = list[j]
+                        local s = DoiteAurasDB.spells[info.key]
+                        if s then s.iconTexture = tex end
+                    end
+                end
+                local n2 = table.getn(list)
+                for j = 1, n2 do
+                    local info = list[j]
+                    local f = _G["DoiteIcon_" .. info.key]
+                    if f and f.icon and (f.icon:GetTexture() ~= tex) then
+                        f.icon:SetTexture(tex)
+                    end
+                end
+            end
         end
         i = i + 1
     end
-	if dirty_aura and DoiteAurasDB and DoiteAurasDB.cache then
-    -- mark DB dirty so SavedVariables flush includes cache
-    DoiteAurasDB.cache = IconCache
-	end
+
+    if dirty_aura and DoiteAurasDB and DoiteAurasDB.cache then
+        DoiteAurasDB.cache = IconCache
+    end
 end
 
 ---------------------------------------------------------------
@@ -213,39 +258,24 @@ end
 -- Remaining time by spell *name* (searches spellbook, then calls _AbilityRemainingSeconds)
 local function _AbilityRemainingByName(spellName)
     if not spellName then return nil end
-    local i = 1
-    while i <= 200 do
-        local s = GetSpellName(i, BOOKTYPE_SPELL)
-        if not s then break end
-        if s == spellName then
-            return _AbilityRemainingSeconds(i, BOOKTYPE_SPELL)
-        end
-        i = i + 1
-    end
-    return nil
+    local idx = _GetSpellIndexByName(spellName)
+    return _AbilityRemainingSeconds(idx, BOOKTYPE_SPELL)
 end
 
 -- Cooldown (remaining, totalDuration) by spell name; nil,nil if not in book
 local function _AbilityCooldownByName(spellName)
     if not spellName then return nil, nil end
-    local i = 1
-    while i <= 200 do
-        local s = GetSpellName(i, BOOKTYPE_SPELL)
-        if not s then break end
-        if s == spellName then
-            local start, dur = GetSpellCooldown(i, BOOKTYPE_SPELL)
-            if start and dur and start > 0 and dur > 0 then
-                local rem = (start + dur) - GetTime()
-                if rem < 0 then rem = 0 end
-                return rem, dur
-            else
-                -- not on cooldown
-                return 0, dur or 0
-            end
-        end
-        i = i + 1
+    local idx = _GetSpellIndexByName(spellName)
+    if not idx then return nil, nil end
+
+    local start, dur = GetSpellCooldown(idx, BOOKTYPE_SPELL)
+    if start and dur and start > 0 and dur > 0 then
+        local rem = (start + dur) - GetTime()
+        if rem < 0 then rem = 0 end
+        return rem, dur
+    else
+        return 0, dur or 0
     end
-    return nil, nil
 end
 
 ----------------------------------------------------------------
@@ -439,6 +469,66 @@ local function _GetAuraStacksOnUnit(unit, auraName, wantDebuff)
     return nil
 end
 
+-- === Health / Combo Points / Formatting helpers ===
+
+-- Percent HP (0..100) for unit; returns nil if unit invalid or no maxhp
+local function _HPPercent(unit)
+    if not unit or not UnitExists(unit) then return nil end
+    local cur = UnitHealth(unit)
+    local max = UnitHealthMax(unit)
+    if not cur or not max or max <= 0 then return nil end
+    return (cur * 100) / max
+end
+
+-- Compare helper: returns true if 'val' satisfies 'comp' vs 'target'
+local function _ValuePasses(val, comp, target)
+    if val == nil or comp == nil or target == nil then return true end
+    if comp == ">=" then
+        return val >= target
+    elseif comp == "<=" then
+        return val <= target
+    elseif comp == "==" then
+        return val == target
+    end
+    return true
+end
+
+-- Combo points reader (1.12 API)
+local function _GetComboPointsSafe()
+    if not UnitExists("target") then return 0 end
+    local cp = GetComboPoints("player", "target")
+    if not cp then return 0 end
+    return cp
+end
+
+-- Is a class that uses combo points?
+local function _PlayerUsesComboPoints()
+    local _, cls = UnitClass("player")
+    cls = cls and string.upper(cls) or ""
+    return (cls == "ROGUE" or cls == "DRUID")
+end
+
+-- Time remaining formatter for overlay text:
+--  >= 3600s -> "#h"
+--  >=   60s -> "#m"
+--  <    10s -> "#.#s" (tenths)
+--  else      "#s"
+local function _FmtRem(remSec)
+    if not remSec or remSec <= 0 then return nil end
+    if remSec >= 3600 then
+        return string.format("%dh", math.floor(remSec / 3600))
+    elseif remSec >= 60 then
+        return string.format("%dm", math.floor(remSec / 60))
+    elseif remSec < 10 then
+        -- Stabilize tenths by truncating, not rounding up
+        local t = math.floor(remSec * 10) / 10
+        return string.format("%.1fs", t)
+    else
+        return string.format("%ds", math.floor(remSec))
+    end
+end
+
+
 -- === Form / Stance evaluation (no fallbacks) ===
 local function _ActiveFormMap()
     local map = {}
@@ -473,13 +563,39 @@ local function _DruidStealth(auraSnap)
     return buffs and buffs["Prowl"] == true
 end
 
+-- Normalize editor labels so logic is robust to wording differences
+local function _NormalizeFormLabel(s)
+    if not s or s == "" then return "All" end
+    s = string.gsub(s, "^%s+", "")
+    s = string.gsub(s, "%s+$", "")
+    -- unify "All ..." variants (editor may say "All Auras", "All stances", etc.)
+    if s == "All" or s == "All forms" or s == "All stances" or s == "All Auras" then
+        return "All"
+    end
+    -- unify the druid "no form(s)" label
+    if s == "0. No form" or s == "0. No forms" then
+        return "0. No form"
+    end
+    return s
+end
+
+-- Paladin: no aura selected in the shapeshift bar
+local function _PaladinNoAura(map)
+    return not _AnyActive(map, {
+        "Devotion Aura","Retribution Aura","Concentration Aura",
+        "Shadow Resistance Aura","Frost Resistance Aura","Fire Resistance Aura","Sanctity Aura"
+    })
+end
+
 local function _PassesFormRequirement(formStr, auraSnap)
+    formStr = _NormalizeFormLabel(formStr)
     if not formStr or formStr == "All" then return true end
 
     local _, cls = UnitClass("player")
     cls = cls and string.upper(cls) or ""
     local map = _ActiveFormMap()
 
+    -- WARRIOR
     if cls == "WARRIOR" then
         if formStr == "1. Battle"    then return map["Battle Stance"]    == true end
         if formStr == "2. Defensive" then return map["Defensive Stance"] == true end
@@ -488,26 +604,35 @@ local function _PassesFormRequirement(formStr, auraSnap)
         if formStr == "Multi: 1+3"   then return _AnyActive(map, {"Battle Stance","Berserker Stance"}) end
         if formStr == "Multi: 2+3"   then return _AnyActive(map, {"Defensive Stance","Berserker Stance"}) end
         return true
-    elseif cls == "ROGUE" then
-        if formStr == "1. Stealth"     then return map["Stealth"] == true end
-        if formStr == "0. No Stealth"  then return map["Stealth"] ~= true end
-        return true
-    elseif cls == "PRIEST" then
-        if formStr == "1. Shadowform"  then return map["Shadowform"] == true end
-        if formStr == "0. No form"     then return map["Shadowform"] ~= true end
-        return true
-    elseif cls == "DRUID" then
-        if formStr == "0. No form"     then return _DruidNoForm(map) end
-        if formStr == "1. Bear"        then return _AnyActive(map, {"Dire Bear Form","Bear Form"}) end
-        if formStr == "2. Aquatic"     then return map["Aquatic Form"] == true end
-        if formStr == "3. Cat"         then return map["Cat Form"] == true end
-        if formStr == "4. Travel"      then return _AnyActive(map, {"Travel Form","Swift Travel Form"}) end
-        if formStr == "5. Moonkin"     then return map["Moonkin Form"] == true end
-        if formStr == "6. Tree"        then return map["Tree of Life Form"] == true end
-        if formStr == "7. Stealth"     then return _DruidStealth(auraSnap) end
-        if formStr == "8. No Stealth"  then return not _DruidStealth(auraSnap) end
+    end
 
-        -- Multis
+    -- ROGUE
+    if cls == "ROGUE" then
+        if formStr == "1. Stealth"    then return map["Stealth"] == true end
+        if formStr == "0. No Stealth" then return map["Stealth"] ~= true end
+        return true
+    end
+
+    -- PRIEST
+    if cls == "PRIEST" then
+        if formStr == "1. Shadowform" then return map["Shadowform"] == true end
+        if formStr == "0. No form"    then return map["Shadowform"] ~= true end
+        return true
+    end
+
+    -- DRUID  (accepts both "0. No form" and "0. No forms")
+    if cls == "DRUID" then
+        if formStr == "0. No form"    then return _DruidNoForm(map) end
+        if formStr == "1. Bear"       then return _AnyActive(map, {"Dire Bear Form","Bear Form"}) end
+        if formStr == "2. Aquatic"    then return map["Aquatic Form"] == true end
+        if formStr == "3. Cat"        then return map["Cat Form"] == true end
+        if formStr == "4. Travel"     then return _AnyActive(map, {"Travel Form","Swift Travel Form"}) end
+        if formStr == "5. Moonkin"    then return map["Moonkin Form"] == true end
+        if formStr == "6. Tree"       then return map["Tree of Life Form"] == true end
+        -- stealth variants use aura state
+        if formStr == "7. Stealth"    then return _DruidStealth(auraSnap) end
+        if formStr == "8. No Stealth" then return not _DruidStealth(auraSnap) end
+        -- multis
         if formStr == "Multi: 0+5"     then return _DruidNoForm(map) or (map["Moonkin Form"] == true) end
         if formStr == "Multi: 0+6"     then return _DruidNoForm(map) or (map["Tree of Life Form"] == true) end
         if formStr == "Multi: 1+3"     then return _AnyActive(map, {"Dire Bear Form","Bear Form","Cat Form"}) end
@@ -516,6 +641,36 @@ local function _PassesFormRequirement(formStr, auraSnap)
         if formStr == "Multi: 5+6"     then return _AnyActive(map, {"Moonkin Form","Tree of Life Form"}) end
         if formStr == "Multi: 0+5+6"   then return _DruidNoForm(map) or _AnyActive(map, {"Moonkin Form","Tree of Life Form"}) end
         if formStr == "Multi: 1+3+8"   then return _AnyActive(map, {"Dire Bear Form","Bear Form","Cat Form"}) and (not _DruidStealth(auraSnap)) end
+        return true
+    end
+
+    -- PALADIN (treat auras as shapeshift forms via GetShapeshiftFormInfo)
+    if cls == "PALADIN" then
+        -- Editor options: "All Auras", "No Aura", "1. Devotion" .. "7. Sanctity" + multis
+        if formStr == "No Aura"                 then return _PaladinNoAura(map) end
+        if formStr == "1. Devotion"             then return map["Devotion Aura"]          == true end
+        if formStr == "2. Retribution"          then return map["Retribution Aura"]       == true end
+        if formStr == "3. Concentration"        then return map["Concentration Aura"]     == true end
+        if formStr == "4. Shadow Resistance"    then return map["Shadow Resistance Aura"] == true end
+        if formStr == "5. Frost Resistance"     then return map["Frost Resistance Aura"]  == true end
+        if formStr == "6. Fire Resistance"      then return map["Fire Resistance Aura"]   == true end
+        if formStr == "7. Sanctity"             then return map["Sanctity Aura"]          == true end
+
+        -- multis (logical OR among the listed auras)
+        if formStr == "Multi: 1+2"               then return _AnyActive(map, {"Devotion Aura","Retribution Aura"}) end
+        if formStr == "Multi: 1+3"               then return _AnyActive(map, {"Devotion Aura","Concentration Aura"}) end
+        if formStr == "Multi: 1+4+5+6"           then return _AnyActive(map, {"Devotion Aura","Shadow Resistance Aura","Frost Resistance Aura","Fire Resistance Aura"}) end
+        if formStr == "Multi: 1+7"               then return _AnyActive(map, {"Devotion Aura","Sanctity Aura"}) end
+        if formStr == "Multi: 1+2+3"             then return _AnyActive(map, {"Devotion Aura","Retribution Aura","Concentration Aura"}) end
+        if formStr == "Multi: 1+2+3+4+5+6"       then return _AnyActive(map, {"Devotion Aura","Retribution Aura","Concentration Aura","Shadow Resistance Aura","Frost Resistance Aura","Fire Resistance Aura"}) end
+        if formStr == "Multi: 2+3"               then return _AnyActive(map, {"Retribution Aura","Concentration Aura"}) end
+        if formStr == "Multi: 2+4+5+6"           then return _AnyActive(map, {"Retribution Aura","Shadow Resistance Aura","Frost Resistance Aura","Fire Resistance Aura"}) end
+        if formStr == "Multi: 2+7"               then return _AnyActive(map, {"Retribution Aura","Sanctity Aura"}) end
+        if formStr == "Multi: 2+3+4+5+6"         then return _AnyActive(map, {"Retribution Aura","Concentration Aura","Shadow Resistance Aura","Frost Resistance Aura","Fire Resistance Aura"}) end
+        if formStr == "Multi: 3+4+5+6"           then return _AnyActive(map, {"Concentration Aura","Shadow Resistance Aura","Frost Resistance Aura","Fire Resistance Aura"}) end
+        if formStr == "Multi: 3+7"               then return _AnyActive(map, {"Concentration Aura","Sanctity Aura"}) end
+        if formStr == "Multi: 4+5+6+7"           then return _AnyActive(map, {"Shadow Resistance Aura","Frost Resistance Aura","Fire Resistance Aura","Sanctity Aura"}) end
+
         return true
     end
 
@@ -529,22 +684,16 @@ local function _EnsureAbilityTexture(frame, data)
     local spellName = data.displayName or data.name
     if not spellName then return end
 
-    local bookType = BOOKTYPE_SPELL
-    local i = 1
-    while i <= 200 do
-        local s = GetSpellName(i, bookType)
-        if not s then break end
-        if s == spellName then
-            local tex = GetSpellTexture(i, bookType)
-            if tex then
-                frame.icon:SetTexture(tex)
-                IconCache[spellName] = tex -- cache the spellbook texture too (so it persists)
-            end
-            break
+    local idx = _GetSpellIndexByName(spellName)
+    if idx then
+        local tex = GetSpellTexture(idx, BOOKTYPE_SPELL)
+        if tex then
+            frame.icon:SetTexture(tex)
+            IconCache[spellName] = tex -- persist
         end
-        i = i + 1
     end
 end
+
 
 -- Ensure a Buff/Debuff icon has a texture (player/target, then fallback via spellbook)
 local function _EnsureAuraTexture(frame, data)
@@ -651,23 +800,14 @@ local function CheckAbilityConditions(data)
     local show = true
 
     -- === 1. Cooldown / usability ===
-    local spellName = data.displayName or data.name
-    local spellIndex
-    local bookType = BOOKTYPE_SPELL
-    local foundInBook = false
-    for i = 1, 200 do
-        local name = GetSpellName(i, bookType)
-        if not name then break end
-        if name == spellName then
-            spellIndex = i
-            foundInBook = true
-            break
-        end
-    end
+	local spellName = data.displayName or data.name
+	local spellIndex = _GetSpellIndexByName(spellName)
+	local bookType = BOOKTYPE_SPELL
+	local foundInBook = (spellIndex ~= nil)
 
-    if not foundInBook then
-        return false
-    end
+	if not foundInBook then
+		return false
+	end
 
     local function IsOnCooldown(idx)
         if not idx then return false end
@@ -697,26 +837,36 @@ local function CheckAbilityConditions(data)
         if outCombatFlag and InCombat() then show = false end
     end
 
-    -- === 3. Target (multi-select: help/harm/self; at least one)
-	local allowHelp = (c.targetHelp == true)  -- default false
-	local allowHarm = (c.targetHarm == true)  -- default false
-	local allowSelf = (c.targetSelf == true)  -- default false
+	-- === 3. Target (multi-select: help/harm/self; at least one)
+	local allowHelp = (c.targetHelp == true)
+	local allowHarm = (c.targetHarm == true)
+	local allowSelf = (c.targetSelf == true)
 
+	-- If nothing selected, do NOT gate on target at all.
 	local ok = true
 	if allowHelp or allowHarm or allowSelf then
 		ok = false
+
+		-- Self: must be explicitly targeting yourself
 		if allowSelf and UnitExists("target") and UnitIsUnit("player","target") then
 			ok = true
 		end
-		if (not ok) and allowHelp and UnitExists("target") and UnitIsFriend("player","target")
+
+		-- Help: friendly target (EXCLUDING self), requires a target
+		if (not ok) and allowHelp and UnitExists("target")
+		   and UnitIsFriend("player","target")
 		   and (not UnitIsUnit("player","target")) then
 			ok = true
 		end
-		if (not ok) and allowHarm and UnitExists("target") and UnitCanAttack("player","target")
+
+		-- Harm: hostile/attackable and not friendly, requires a target
+		if (not ok) and allowHarm and UnitExists("target")
+		   and UnitCanAttack("player","target")
 		   and (not UnitIsFriend("player","target")) then
 			ok = true
 		end
 	end
+
 	if not ok then show = false end
 
     -- === 4. Form / Stance requirement (if set)
@@ -725,6 +875,55 @@ local function CheckAbilityConditions(data)
             show = false
         end
     end
+
+	    -- === HP threshold (% of max) — player or target
+    if show and c.hpComp and c.hpVal and c.hpMode and c.hpMode ~= "" then
+        local hpTarget = nil
+        if c.hpMode == "my" then
+            hpTarget = "player"
+        elseif c.hpMode == "target" then
+            -- Gate by target kind if user also set targetHelp/targetHarm/targetSelf
+            if UnitExists("target") then
+                local allowHelp = (c.targetHelp == true)
+                local allowHarm = (c.targetHarm == true)
+                local allowSelf = (c.targetSelf == true)
+
+                -- If any of help/harm/self are set, enforce "harm" implies hostile, "help" implies friendly (excluding self here)
+                if (allowHelp or allowHarm or allowSelf) then
+                    local okHP = true
+                    if allowSelf then
+                        okHP = UnitIsUnit("player","target")
+                    elseif allowHelp then
+                        okHP = UnitIsFriend("player","target") and (not UnitIsUnit("player","target"))
+                    elseif allowHarm then
+                        okHP = UnitCanAttack("player","target") and (not UnitIsFriend("player","target"))
+                    end
+                    if not okHP then hpTarget = nil else hpTarget = "target" end
+                else
+                    hpTarget = "target"
+                end
+            end
+        end
+        if hpTarget then
+            local pct = _HPPercent(hpTarget)
+            local thr = tonumber(c.hpVal)
+            if thr and not _ValuePasses(pct, c.hpComp, thr) then
+                show = false
+            end
+        end
+    end
+
+	    -- === Combo Points (Rogue/Druid only) ===
+    if show and c.cpEnabled == true and _PlayerUsesComboPoints() then
+        local cp = _GetComboPointsSafe()
+        local thr = tonumber(c.cpVal)
+        if thr and c.cpComp and c.cpComp ~= "" then
+            if not _ValuePasses(cp, c.cpComp, thr) then
+                show = false
+            end
+        end
+    end
+
 
     -- === Power threshold (% of max) ===
     if c.powerEnabled
@@ -790,73 +989,85 @@ local function CheckAuraConditions(data)
     end
 
     -- multi-select booleans
-    local allowHelp = (c.targetHelp == true)
-    local allowHarm = (c.targetHarm == true)
-    local allowSelf = (c.targetSelf == true)
+	local allowHelp = (c.targetHelp == true)
+	local allowHarm = (c.targetHarm == true)
+	local allowSelf = (c.targetSelf == true)
 
-    -- Self is exclusive with Help/Harm
-    if allowSelf then
-        allowHelp, allowHarm = false, false
-    end
+	-- If none selected, default to Self
+	if (not allowHelp) and (not allowHarm) and (not allowSelf) then
+		allowSelf = true
+	end
 
-    -- If all three somehow false, default to Self
-    if (not allowHelp) and (not allowHarm) and (not allowSelf) then
-        allowSelf = true
-    end
+	-- Self is exclusive with Help/Harm
+	if allowSelf then
+		allowHelp, allowHarm = false, false
+	end
 
-    local found = false
+	-- === Target gating exactly as requested ===
+	local requiresTarget = (allowHelp or allowHarm) and (not allowSelf)
+	if requiresTarget then
+		if not UnitExists("target") then
+			-- Must have a target for help/harm modes
+			return false, false, false
+		end
+		if allowHelp then
+			-- Require friendly (player counts as friendly only if actively targeted)
+			if not UnitIsFriend("player","target") then
+				return false, false, false
+			end
+		end
+		if allowHarm then
+			-- Require hostile/attackable and not friendly
+			if UnitIsFriend("player","target") or not UnitCanAttack("player","target") then
+				return false, false, false
+			end
+		end
+	end
 
-    -- Self auras — aura on player, regardless of target
-    if (not found) and allowSelf then
-        local s = auraSnapshot.player
-        if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
-            found = true
-        else
-            -- light live probe if snapshot missed it
-            local i = 1; local hit = false
-            if wantBuff then
-                while i <= 40 do
-                    local n = _GetAuraName("player", i, false); if not n then break end
-                    if n == name then hit = true; break end
-                    i = i + 1
-                end
-            end
-            if (not hit) and wantDebuff then
-                i = 1
-                while i <= 40 do
-                    local n = _GetAuraName("player", i, true); if not n then break end
-                    if n == name then hit = true; break end
-                    i = i + 1
-                end
-            end
-            if hit then
-                found = true
-            end
-        end
-    end
+	local found = false
 
-    -- Target (help) auras — friendly target (player counts as friendly too)
-    if (not found)
-       and allowHelp
-       and UnitExists("target")
-       and UnitIsFriend("player","target") then
-        local s = auraSnapshot.target
-        if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
-            found = true
-        end
-    end
+	-- Self auras — aura on player, regardless of target
+	if (not found) and allowSelf then
+		local s = auraSnapshot.player
+		if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
+			found = true
+		else
+			-- light live probe if snapshot missed it
+			local i, hit = 1, false
+			if wantBuff then
+				while i <= 40 do
+					local n = _GetAuraName("player", i, false); if not n then break end
+					if n == name then hit = true; break end
+					i = i + 1
+				end
+			end
+			if (not hit) and wantDebuff then
+				i = 1
+				while i <= 40 do
+					local n = _GetAuraName("player", i, true); if not n then break end
+					if n == name then hit = true; break end
+					i = i + 1
+				end
+			end
+			if hit then found = true end
+		end
+	end
 
-    -- Target (harm) auras — hostile target
-    if (not found)
-       and allowHarm
-       and UnitExists("target")
-       and UnitCanAttack("player","target")
-       and (not UnitIsFriend("player","target")) then
-        local s = auraSnapshot.target
-        if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
-            found = true
-        end
-    end
+	-- Target (help) — requires friendly target (already gated above)
+	if (not found) and allowHelp then
+		local s = auraSnapshot.target
+		if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
+			found = true
+		end
+	end
+
+	-- Target (harm) — requires hostile target (already gated above)
+	if (not found) and allowHarm then
+		local s = auraSnapshot.target
+		if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
+			found = true
+		end
+	end
 
     -- Decide show based on mode first
     local show
@@ -878,6 +1089,70 @@ local function CheckAuraConditions(data)
     if c.form and c.form ~= "All" then
         if not _PassesFormRequirement(c.form, auraSnapshot) then
             show = false
+        end
+    end
+
+	    -- === Power threshold (% of max) — same semantics as abilities
+    if show and c.powerEnabled
+       and c.powerComp and c.powerComp ~= ""
+       and c.powerVal  and c.powerVal  ~= "" then
+
+        local valPct    = GetPowerPercent()
+        local targetPct = tonumber(c.powerVal) or 0
+        local comp      = c.powerComp
+
+        local pass = true
+        if comp == ">=" then
+            pass = (valPct >= targetPct)
+        elseif comp == "<=" then
+            pass = (valPct <= targetPct)
+        elseif comp == "==" then
+            pass = (valPct == targetPct)
+        end
+        if not pass then show = false end
+    end
+
+	    -- === HP threshold (% of max) — respects target flags
+    if show and c.hpComp and c.hpVal and c.hpMode and c.hpMode ~= "" then
+        local hpTarget = nil
+        if c.hpMode == "my" then
+            hpTarget = "player"
+        elseif c.hpMode == "target" then
+            -- Decide if "target" qualifies given help/harm/self flags:
+            local allowHelp = (c.targetHelp == true)
+            local allowHarm = (c.targetHarm == true)
+            local allowSelf = (c.targetSelf == true)
+
+            if UnitExists("target") then
+                if allowSelf then
+                    if UnitIsUnit("player","target") then hpTarget = "target" end
+                elseif allowHelp then
+                    if UnitIsFriend("player","target") and (not UnitIsUnit("player","target")) then hpTarget = "target" end
+                elseif allowHarm then
+                    if UnitCanAttack("player","target") and (not UnitIsFriend("player","target")) then hpTarget = "target" end
+                else
+                    -- no target gating set -> accept any target
+                    hpTarget = "target"
+                end
+            end
+        end
+        if hpTarget then
+            local pct = _HPPercent(hpTarget)
+            local thr = tonumber(c.hpVal)
+            if thr and not _ValuePasses(pct, c.hpComp, thr) then
+                show = false
+            end
+        end
+    end
+
+	    -- === Combo Points (Rogue/Druid only) ===
+    if show and c.cpEnabled == true and _PlayerUsesComboPoints() then
+        local cp = _GetComboPointsSafe()
+        local thr = tonumber(c.cpVal)
+        if thr and c.cpComp and c.cpComp ~= "" then
+            if not _ValuePasses(cp, c.cpComp, thr) then
+                show = false
+            end
         end
     end
 
@@ -1015,18 +1290,55 @@ function DoiteConditions:ApplyVisuals(key, show, glow, grey)
     else
         SlideMgr:Stop(key)
     end
-
-    -- Pull the current slide offset/alpha (if sliding)
+	
+	    -- Pull the current slide offset/alpha (if sliding)
+    local allowSlideShow = false
     do
-        local active, sdx, sdy, a, sg, sg2 = SlideMgr:Get(key)
-        slideActive, dx, dy, slideAlpha, supGlow, supGrey = active, sdx, sdy, a, sg, sg2
+        local active, sdx, sdy, a = SlideMgr:Get(key)
+        slideActive, dx, dy, slideAlpha = active, sdx, sdy, a
 
-        -- Flags for other systems:
-        frame._daSliding      = slideActive and true or false   -- animation happening this frame
-        frame._daShouldShow   = show and true or false          -- logical visibility from conditions (no slide)
-        -- NOTE: frame._daBlockedByGroup is set by DoiteGroup; we only READ it here
+        -- ==== Effective flags with OLD-behavior defaults ====
+        -- 1) Always allow showing during slide (preview), like OLD code.
+        allowSlideShow = slideActive   -- NOTE: NO 'local' here; write the outer variable
+
+        -- 2) Default suppression during slide UNLESS slider is explicitly enabled.
+        local isSliderEnabled = false
+        local sliderGlowFlag  = false
+        local sliderGreyFlag  = false
+
+        if dataTbl and dataTbl.type == "Ability" and dataTbl.conditions and dataTbl.conditions.ability then
+            local ca = dataTbl.conditions.ability
+            if ca.slider == true then
+                isSliderEnabled = true
+                sliderGlowFlag  = (ca.sliderGlow == true)
+                sliderGreyFlag  = (ca.sliderGrey == true)
+            end
+        end
+
+        -- Decide which effects to use this frame:
+        --  - Not sliding -> normal glow/greyscale
+        --  - Sliding + slider enabled -> sliderGlow/sliderGrey
+        --  - Sliding + slider disabled -> suppress both (match OLD code)
+        local useGlow, useGrey
+        if slideActive then
+            if isSliderEnabled then
+                useGlow = sliderGlowFlag
+                useGrey = sliderGreyFlag
+            else
+                useGlow = false
+                useGrey = false
+            end
+        else
+            useGlow = (glow == true)
+            useGrey = (grey == true)
+        end
+
+        -- Flags for other systems / change detector
+        frame._daSliding      = slideActive and true or false
+        frame._daShouldShow   = show and true or false
+        frame._daUseGlow      = useGlow and true or false
+        frame._daUseGreyscale = useGrey and true or false
     end
-
 
 	-- Determine baseline anchoring
 	local baseX, baseY = 0, 0
@@ -1034,21 +1346,26 @@ function DoiteConditions:ApplyVisuals(key, show, glow, grey)
 
 	 -- If this icon belongs to a group, prefer the latest computed position (for leaders AND followers)
     local isGrouped = (dataTbl and dataTbl.group and dataTbl.group ~= "" and dataTbl.group ~= "no")
-    if isGrouped and _G["DoiteGroup_Computed"] and _G["DoiteGroup_Computed"][dataTbl.group] then
-        for _, e in ipairs(_G["DoiteGroup_Computed"][dataTbl.group]) do
-            if e.key == key and e._computedPos then
-                baseX = e._computedPos.x or baseX
-                baseY = e._computedPos.y or baseY
-                break
-            end
-        end
-    end
+	if isGrouped and _G["DoiteGroup_Computed"] and _G["DoiteGroup_Computed"][dataTbl.group] then
+		local arr = _G["DoiteGroup_Computed"][dataTbl.group]
+		local n = table.getn(arr)
+		for idx = 1, n do
+			local e = arr[idx]
+			if e and e.key == key and e._computedPos then
+				baseX = e._computedPos.x or baseX
+				baseY = e._computedPos.y or baseY
+				break
+			end
+		end
+	end
+
 
 
 	if slideActive then SlideMgr:UpdateBase(key, baseX, baseY) end
 
-	-- Show during slide preview even if main conditions would hide
-	local showForSlide = (show or slideActive)
+    -- Show during slide preview even if main conditions would hide,
+    -- but ONLY if the slider for this ability explicitly allows it.
+    local showForSlide = (show or allowSlideShow)
 
 	-- If this is the key currently being edited, force it visible regardless of conditions/group caps
 	if editing then
@@ -1095,19 +1412,172 @@ function DoiteConditions:ApplyVisuals(key, show, glow, grey)
 				end
 			end
 		end
+		-- === Overlay Text: cooldown remaining + stacks (forced above glow) ===
+        do
+            -- Ensure a dedicated top layer so text always renders above any glow frames
+            if not frame._daTextLayer then
+                local tl = CreateFrame("Frame", nil, frame)
+                frame._daTextLayer = tl
+                tl:SetAllPoints(frame)
+            end
+            -- Keep this child well above siblings (incl. typical glow frames)
+            do
+                local baseLevel = frame:GetFrameLevel() or 0
+                frame._daTextLayer:SetFrameStrata(frame:GetFrameStrata() or "MEDIUM")
+                frame._daTextLayer:SetFrameLevel(baseLevel + 50)
+            end
+
+            -- Lazy-create fontstrings parented to the text layer
+            if not frame._daTextRem then
+                local fs = frame._daTextLayer:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+                fs:SetJustifyH("CENTER"); fs:SetJustifyV("MIDDLE")
+                frame._daTextRem = fs
+            end
+            if not frame._daTextStacks then
+                local fs2 = frame._daTextLayer:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                fs2:SetJustifyH("RIGHT"); fs2:SetJustifyV("BOTTOM")
+                frame._daTextStacks = fs2
+            end
+
+            -- Scale fonts based on icon size
+            local w = frame:GetWidth() or 36
+            local remSize   = math.max(10, math.floor(w * 0.42)) -- center text
+            local stackSize = math.max(8,  math.floor(w * 0.28)) -- corner text
+            frame._daTextRem:SetFont(GameFontHighlight:GetFont(), remSize, "OUTLINE")
+            frame._daTextStacks:SetFont(GameFontNormalSmall:GetFont(), stackSize, "OUTLINE")
+
+            -- Anchor (relative to the icon frame; parented to _daTextLayer)
+            frame._daTextRem:ClearAllPoints()
+            frame._daTextRem:SetPoint("CENTER", frame, "CENTER", 0, 0)
+
+            frame._daTextStacks:ClearAllPoints()
+            frame._daTextStacks:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -2, 2)
+
+            -- Defaults hidden; show when we set content
+            frame._daTextRem:SetText("")
+            frame._daTextRem:Hide()
+            frame._daTextStacks:SetText("")
+            frame._daTextStacks:Hide()
+
+            -- ========== Remaining Time ==========
+			local wantRem = false
+			local remText = nil
+
+			if dataTbl then
+				if dataTbl.type == "Ability" and dataTbl.conditions and dataTbl.conditions.ability then
+					local ca = dataTbl.conditions.ability
+					if ca.textTimeRemaining == true then
+						-- Show timer text only when:
+						--   (mode == oncd) OR ((mode == usable/notcd) AND slider enabled)
+						local allowText =
+							(ca.mode == "oncd") or
+							((ca.mode == "usable" or ca.mode == "notcd") and ca.slider == true)
+
+						if allowText then
+							local spellName = dataTbl.displayName or dataTbl.name
+							local rem, dur  = _AbilityCooldownByName(spellName)
+
+							-- Guard against the GLOBAL COOLDOWN: ignore short cooldowns (<= 1.6s)
+							if rem and rem > 0 and dur and dur > 1.6 then
+								remText = _FmtRem(rem)
+								wantRem = (remText ~= nil)
+							end
+						end
+					end
+				elseif (dataTbl.type == "Buff" or dataTbl.type == "Debuff") and dataTbl.conditions and dataTbl.conditions.aura then
+					local ca = dataTbl.conditions.aura
+					if ca.textTimeRemaining == true and ca.targetSelf == true then
+						-- Icon text timer only supported for player-self auras in 1.12
+						local auraName = dataTbl.displayName or dataTbl.name
+						local rem = _PlayerAuraRemainingSeconds(auraName)
+						if rem and rem > 0 then
+							remText = _FmtRem(rem)
+							wantRem = (remText ~= nil)
+						end
+					end
+				end
+			end
+
+			if wantRem and remText then
+				frame._daTextRem:SetText(remText)
+				frame._daTextRem:SetTextColor(1, 1, 1, 1) -- white
+				frame._daTextRem:Show()
+			end
+
+            -- ========== Stack Counter (auras only) ==========
+            if dataTbl and (dataTbl.type == "Buff" or dataTbl.type == "Debuff")
+               and dataTbl.conditions and dataTbl.conditions.aura then
+                local ca = dataTbl.conditions.aura
+                if ca.textStackCounter == true then
+                    local auraName = dataTbl.displayName or dataTbl.name
+                    local wantDebuff = (dataTbl.type == "Debuff")
+
+                    -- Resolve which unit to read stacks from (same logic pattern as in CheckAuraConditions)
+                    local unitToCheck = nil
+                    if ca.targetSelf == true then
+                        unitToCheck = "player"
+                    elseif ca.targetHelp == true and UnitExists("target") and UnitIsFriend("player","target") then
+                        unitToCheck = "target"
+                    elseif ca.targetHarm == true
+                       and UnitExists("target")
+                       and UnitCanAttack("player","target")
+                       and (not UnitIsFriend("player","target")) then
+                        unitToCheck = "target"
+                    end
+
+                    if unitToCheck then
+                        local cnt = _GetAuraStacksOnUnit(unitToCheck, auraName, wantDebuff)
+                        if cnt and cnt > 1 then
+                            frame._daTextStacks:SetText(tostring(cnt))
+                            frame._daTextStacks:SetTextColor(1, 0.2, 0.2, 1) -- red
+                            frame._daTextStacks:Show()
+                        end
+                    end
+                end
+            end
+        end
     end
 
-    if showForSlide then frame:Show() else frame:Hide() end
+	-- === Apply EFFECTS with change detection (don’t restart animations every frame) ===
+	do
+		-- Decide final show flag (editing & group gating preserved)
+		local showForSlide = (show or allowSlideShow)
+		if editing then showForSlide = true end
+		if frame._daBlockedByGroup and (not editing) then showForSlide = false end
 
-    -- Greyscale (suppressed while sliding)
-    if frame.icon then
-        if (grey and (not supGrey)) then frame.icon:SetDesaturated(1) else frame.icon:SetDesaturated(nil) end
-    end
+		-- Show/hide only when it actually changes
+		if frame._daLastShown ~= showForSlide then
+			frame._daLastShown = showForSlide
+			if showForSlide then frame:Show() else frame:Hide() end
+		end
 
-    -- Glow (suppressed while sliding; fully restored after)
-    if DG then
-        if showForSlide and glow and (not supGlow) then DG.Start(frame) else DG.Stop(frame) end
-    end
+		-- GREYSCALE — only flip when it changes
+		if frame.icon then
+			local wantGrey = (frame._daUseGreyscale == true) and showForSlide
+			if frame._daLastGrey ~= wantGrey then
+				frame._daLastGrey = wantGrey
+				if wantGrey then
+					frame.icon:SetDesaturated(1)
+				else
+					frame.icon:SetDesaturated(nil)
+				end
+			end
+		end
+
+		-- GLOW — only start/stop when it changes (preserve animation)
+		if DG then
+			local wantGlow = (frame._daUseGlow == true) and showForSlide
+			if frame._daLastGlow ~= wantGlow then
+				frame._daLastGlow = wantGlow
+				if wantGlow then
+					DG.Start(frame)
+				else
+					DG.Stop(frame)
+				end
+			end
+		end
+	end
+
 
     ----------------------------------------------------------------
     -- Reflow groups when this icon’s logical visibility flips.
@@ -1158,16 +1628,17 @@ end
 
 local _tick = CreateFrame("Frame")
 local _acc = 0
--- place near your other locals
 local _scanAccum = 0
+local _textAccum = 0
 
 _tick:SetScript("OnUpdate", function()
     local dt = arg1
     _acc = _acc + dt
     _scanAccum = _scanAccum + dt
+	_textAccum = _textAccum + dt
 
-    -- Refresh player & target auras every 0.1s
-    if _scanAccum >= 0.1 then
+    -- Refresh player & target auras every 0.2s
+    if _scanAccum >= 0.2 then
         _scanAccum = 0
 
         -- player
@@ -1180,17 +1651,24 @@ _tick:SetScript("OnUpdate", function()
             dirty_aura = true
         end
     end
+	
+	-- Smooth remaining-time updates (abilities + auras) every 0.1s
+    -- Keeps overlay text ticking smoothly even on long CDs outside slide.
+    if _textAccum >= 0.1 then
+        _textAccum = 0
+        dirty_ability = true  -- ability rem text
+        dirty_aura    = true  -- aura rem text
+    end
 
-	-- Render faster while sliding (feels smooth), default to ~30fps otherwise
-	local thresh = (next(SlideMgr.active) ~= nil) and 0.016 or 0.020
-	if _acc < thresh then return end
-	_acc = 0
-	dirty_ability = true
+    -- Render faster while sliding; else ~30fps
+    local thresh = (next(SlideMgr.active) ~= nil) and 0.016 or 0.033
+    if _acc < thresh then return end
+    _acc = 0
 
-    local needAbility = dirty_ability or dirty_power
-    local needAura    = dirty_aura or dirty_target
-    if needAbility then DoiteConditions:EvaluateAbilities() end
-    if needAura then DoiteConditions:EvaluateAuras() end
+	local needAbility = dirty_ability or dirty_power
+	local needAura    = dirty_aura or dirty_target or dirty_power
+	if needAbility then DoiteConditions:EvaluateAbilities() end
+	if needAura then DoiteConditions:EvaluateAuras() end
     if needAbility or needAura then
         dirty_ability, dirty_aura, dirty_target, dirty_power = false, false, false, false
     end
@@ -1216,6 +1694,9 @@ eventFrame:RegisterEvent("UNIT_ENERGY")
 eventFrame:RegisterEvent("UNIT_RAGE")
 eventFrame:RegisterEvent("ACTIONBAR_UPDATE_USABLE")
 eventFrame:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+eventFrame:RegisterEvent("SPELLS_CHANGED")
+eventFrame:RegisterEvent("UNIT_HEALTH")
+eventFrame:RegisterEvent("PLAYER_COMBO_POINTS")
 
 eventFrame:SetScript("OnEvent", function()
     if event == "PLAYER_ENTERING_WORLD" then
@@ -1223,13 +1704,20 @@ eventFrame:SetScript("OnEvent", function()
         if UnitExists("target") then _ScanUnitAuras("target") end
         dirty_ability, dirty_aura, dirty_target, dirty_power = true, true, true, true
     elseif event == "UNIT_AURA" then
-        if arg1 == "player" then
-            _ScanUnitAuras("player")
-            dirty_ability = true
-        elseif arg1 == "target" then
-            _ScanUnitAuras("target")
-        end
-        dirty_aura = true
+		local now = GetTime()
+		if (now - _lastAuraScanAt) > 0.05 then
+			if arg1 == "player" then
+				_ScanUnitAuras("player")
+				dirty_ability = true
+			elseif arg1 == "target" then
+				_ScanUnitAuras("target")
+			end
+			dirty_aura = true
+			_lastAuraScanAt = now
+		end
+	elseif event == "SPELLS_CHANGED" then
+		for k in pairs(SpellIndexCache) do SpellIndexCache[k] = nil end
+		dirty_ability = true
     elseif event == "PLAYER_TARGET_CHANGED" then
         if UnitExists("target") then
             _ScanUnitAuras("target")
@@ -1250,6 +1738,14 @@ eventFrame:SetScript("OnEvent", function()
         dirty_ability = true
     elseif event == "ACTIONBAR_UPDATE_COOLDOWN" then
         dirty_ability = true
+	elseif event == "UNIT_HEALTH" then
+        if arg1 == "player" or arg1 == "target" then
+            dirty_ability = true
+            dirty_aura    = true
+        end
+    elseif event == "PLAYER_COMBO_POINTS" then
+        dirty_ability = true
+        dirty_aura    = true
     elseif event == "UNIT_MANA" or event == "UNIT_RAGE" or event == "UNIT_ENERGY" then
         if arg1 == "player" then dirty_power = true end
     elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then

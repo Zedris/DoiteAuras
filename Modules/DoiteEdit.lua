@@ -11,6 +11,16 @@ local condFrame = nil
 local currentKey = nil
 local SafeRefresh
 local SafeEvaluate
+local srows
+local ShowSeparatorsForType
+
+-- class gate used by UpdateConditionsUI and others
+local function _IsRogueOrDruid()
+    local _, c = UnitClass("player")
+    c = c and string.upper(c) or ""
+    return (c == "ROGUE" or c == "DRUID")
+end
+
 
 -- === Lightweight throttle for heavy UI work (prevents lag while dragging sliders) ===
 local _DoiteEdit_PendingHeavy = false
@@ -67,38 +77,41 @@ local function EnsureDBEntry(key)
     if not d.iconSize then d.iconSize = 40 end
     if not d.conditions then d.conditions = {} end
 
-    -- ensure subtables exist for consistent shape
-    if not d.conditions.ability then d.conditions.ability = {} end
-    if not d.conditions.aura    then d.conditions.aura    = {} end
-
-    -- to two independent booleans: inCombat, outCombat (both true = default/both).
+    -- create ONLY the correct subtable for this entry type and prune the other one
     if d.type == "Ability" then
-        if d.conditions.ability.mode   == nil then d.conditions.ability.mode   = "notcd" end
-        if d.conditions.ability.inCombat  == nil then d.conditions.ability.inCombat  = true end
-        if d.conditions.ability.outCombat == nil then d.conditions.ability.outCombat = true end
-				-- multi-select targets (at least one should be true)
-		if d.conditions.ability.targetHelp == nil then d.conditions.ability.targetHelp = false end
-		if d.conditions.ability.targetHarm == nil then d.conditions.ability.targetHarm = false end
-		if d.conditions.ability.targetSelf == nil then d.conditions.ability.targetSelf = false end
-		-- legacy cleanup
-		d.conditions.ability.target = nil
-        if d.conditions.ability.form    == nil then d.conditions.ability.form    = "All"   end
-    else -- Buff / Debuff
-        if d.conditions.aura.mode   == nil then d.conditions.aura.mode   = "found" end
-        if d.conditions.aura.inCombat  == nil then d.conditions.aura.inCombat  = true end
-        if d.conditions.aura.outCombat == nil then d.conditions.aura.outCombat = true end
-		-- Aura targets: self-exclusive model (default = On player (self))
-		if d.conditions.aura.targetSelf == nil then d.conditions.aura.targetSelf = true  end
-		if d.conditions.aura.targetHelp == nil then d.conditions.aura.targetHelp = false end
-		if d.conditions.aura.targetHarm == nil then d.conditions.aura.targetHarm = false end
+        -- keep ability; remove aura
+        d.conditions.ability = d.conditions.ability or {}
+        d.conditions.aura = nil
 
-		-- legacy cleanup (if still present)
-		d.conditions.aura.target = nil
-		d.conditions.aura.targetSelf = d.conditions.aura.targetSelf -- keep; old flag name reused
-		d.conditions.aura.targetTarget = nil
+        -- defaults (ability)
+        if d.conditions.ability.mode        == nil then d.conditions.ability.mode        = "notcd" end
+        if d.conditions.ability.inCombat    == nil then d.conditions.ability.inCombat    = true    end
+        if d.conditions.ability.outCombat   == nil then d.conditions.ability.outCombat   = true    end
+        if d.conditions.ability.targetHelp  == nil then d.conditions.ability.targetHelp  = false   end
+        if d.conditions.ability.targetHarm  == nil then d.conditions.ability.targetHarm  = false   end
+        if d.conditions.ability.targetSelf  == nil then d.conditions.ability.targetSelf  = false   end
+        if d.conditions.ability.form        == nil then d.conditions.ability.form        = "All"   end
 
-		
-        if d.conditions.aura.form    == nil then d.conditions.aura.form    = "All"   end
+        -- legacy cleanup
+        d.conditions.ability.target = nil
+
+    else -- Buff / Debuff (treat anything not "Ability" as an aura carrier)
+        -- keep aura; remove ability
+        d.conditions.aura = d.conditions.aura or {}
+        d.conditions.ability = nil
+
+        -- defaults (aura)
+        if d.conditions.aura.mode        == nil then d.conditions.aura.mode        = "found" end
+        if d.conditions.aura.inCombat    == nil then d.conditions.aura.inCombat    = true    end
+        if d.conditions.aura.outCombat   == nil then d.conditions.aura.outCombat   = true    end
+        if d.conditions.aura.targetSelf  == nil then d.conditions.aura.targetSelf  = true    end  -- default self
+        if d.conditions.aura.targetHelp  == nil then d.conditions.aura.targetHelp  = false   end
+        if d.conditions.aura.targetHarm  == nil then d.conditions.aura.targetHarm  = false   end
+        if d.conditions.aura.form        == nil then d.conditions.aura.form        = "All"   end
+
+        -- legacy cleanup
+        d.conditions.aura.target = nil
+        d.conditions.aura.targetTarget = nil
     end
 
     return d
@@ -362,19 +375,28 @@ local function InitFormDropdown(dd, data, condType)
     local forms = {}
     if class == "DRUID" then
         forms = {
-            "All",
-            "0. No form", "1. Bear", "2. Aquatic", "3. Cat", "4. Travel",
+            "All forms",
+            "0. No forms", "1. Bear", "2. Aquatic", "3. Cat", "4. Travel",
             "5. Moonkin", "6. Tree", "7. Stealth", "8. No Stealth",
             "Multi: 0+5", "Multi: 0+6", "Multi: 1+3", "Multi: 3+7", "Multi: 3+8",
             "Multi: 5+6", "Multi: 0+5+6", "Multi: 1+3+8"
         }
     elseif class == "WARRIOR" then
-        forms = { "All", "1. Battle", "2. Defensive", "3. Berserker",
+        forms = { "All stances", "1. Battle", "2. Defensive", "3. Berserker",
                   "Multi: 1+2", "Multi: 1+3", "Multi: 2+3" }
     elseif class == "ROGUE" then
-        forms = { "All", "0. No Stealth", "1. Stealth" }
+        forms = { "All forms", "0. No Stealth", "1. Stealth" }
     elseif class == "PRIEST" then
-        forms = { "All", "0. No form", "1. Shadowform" }
+        forms = { "All forms", "0. No form", "1. Shadowform" }
+    elseif class == "PALADIN" then
+        forms = {
+            "All Auras", "No Aura", "1. Devotion", "2. Retribution", "3. Concentration",
+            "4. Shadow Resistance", "5. Frost Resistance", "6. Fire Resistance", "7. Sanctity",
+            "Multi: 1+2", "Multi: 1+3", "Multi: 1+4+5+6", "Multi: 1+7", "Multi: 1+2+3", "Multi: 1+2+3+4+5+6",
+            "Multi: 2+3", "Multi: 2+4+5+6", "Multi: 2+7", "Multi: 2+3+4+5+6",
+            "Multi: 3+4+5+6", "Multi: 3+7",
+            "Multi: 4+5+6+7"
+        }
     else
         dd:Hide()
         return
@@ -391,16 +413,17 @@ local function InitFormDropdown(dd, data, condType)
             info.value = form
             local pickedForm = form -- capture
 
-			info.func = function()
-				UIDropDownMenu_SetSelectedValue(dd, this.value)
-				UIDropDownMenu_SetText(this.value, dd)
+			info.func = function(button)
+				local picked = (button and button.value) or pickedForm
+				UIDropDownMenu_SetSelectedValue(dd, picked)
+				UIDropDownMenu_SetText(picked, dd)
 
 				if condType == "ability" then
 					data.conditions.ability = data.conditions.ability or {}
-					data.conditions.ability.form = this.value
+					data.conditions.ability.form = picked
 				elseif condType == "aura" then
 					data.conditions.aura = data.conditions.aura or {}
-					data.conditions.aura.form = this.value
+					data.conditions.aura.form = picked
 				end
 
 				SafeRefresh()
@@ -417,19 +440,27 @@ local function InitFormDropdown(dd, data, condType)
     end)
 
     -- Restore visible value (saved or default)
-    local savedForm = (data and data.conditions and data.conditions[condType] and data.conditions[condType].form) or "All"
-    -- pick the ID corresponding to savedForm (fallback to SetText if SetSelectedID isn't available)
-    for i, f in ipairs(forms) do
-        if f == savedForm then
-            UIDropDownMenu_SetSelectedID(dd, i)
-            if UIDropDownMenu_SetText then
-                UIDropDownMenu_SetText(savedForm, dd)
-            else
-                local t = _G[dd:GetName() .. "Text"]
-                if t and t.SetText then t:SetText(savedForm) end
+    -- Determine saved value (legacy default is "All"; treat that as not explicitly chosen for UI)
+    local savedForm = (data and data.conditions and data.conditions[condType] and data.conditions[condType].form)
+
+    -- If savedForm maps to an item, select it; otherwise show a neutral placeholder text
+    local matched = false
+    if savedForm and savedForm ~= "All" and savedForm ~= "" then
+        for i, f in ipairs(forms) do
+            if f == savedForm then
+                UIDropDownMenu_SetSelectedID(dd, i)
+                matched = true
+                break
             end
-            break
         end
+    end
+
+    if matched then
+        UIDropDownMenu_SetText(savedForm, dd)
+    else
+        -- Nothing explicitly chosen yet -> show placeholder
+        UIDropDownMenu_SetText("Select form", dd)
+        -- leave selection cleared so the menu doesn't tick anything by default
     end
 
     dd._initializedForKey = thisKey
@@ -456,7 +487,14 @@ local function SetCombatFlag(typeTable, which, enabled)
     if not currentKey then return end
     local d = EnsureDBEntry(currentKey)
     d.conditions = d.conditions or {}
-    d.conditions[typeTable] = d.conditions[typeTable] or {}
+        d.conditions[typeTable] = d.conditions[typeTable] or {}
+
+    -- hard separation: never allow the opposite table to exist
+    if typeTable == "ability" then
+        d.conditions.aura = nil
+    elseif typeTable == "aura" then
+        d.conditions.ability = nil
+    end
     if which == "in" then
         d.conditions[typeTable].inCombat = enabled and true or false
     elseif which == "out" then
@@ -469,14 +507,15 @@ local function SetCombatFlag(typeTable, which, enabled)
 end
 
 local function SetExclusiveTargetMode(mode)
+    -- legacy no-op; we now use ability.targetHelp/targetHarm/targetSelf
     if not currentKey then return end
     local d = EnsureDBEntry(currentKey)
-    d.conditions = d.conditions or {}
-    d.conditions.ability = d.conditions.ability or {}
-    d.conditions.ability.target = mode
+    if d and d.conditions and d.conditions.ability then
+        d.conditions.ability.target = nil
+    end
     UpdateCondFrameForKey(currentKey)
     SafeRefresh()
-	SafeEvaluate()
+    SafeEvaluate()
 end
 
 local function SetExclusiveAuraFoundMode(mode)
@@ -490,13 +529,6 @@ local function SetExclusiveAuraFoundMode(mode)
 	SafeEvaluate()
 end
 
-local function ClearDropdown(dropdown)
-    if not dropdown then return end
-    if UIDropDownMenu_Initialize then UIDropDownMenu_Initialize(dropdown, function() end) end
-    if UIDropDownMenu_ClearAll then UIDropDownMenu_ClearAll(dropdown) end
-    dropdown._initializedForKey = nil
-    dropdown._initializedForType = nil
-end
 ----------------------------------------------------------------
 -- Conditions UI creation & wiring
 ----------------------------------------------------------------
@@ -504,128 +536,318 @@ local function CreateConditionsUI()
     if not condFrame then return end
 
     -- helpers
-    local function MakeCheck(name, label, x, y)
-        local cb = CreateFrame("CheckButton", name, condFrame, "UICheckButtonTemplate")
-        cb:SetWidth(20); cb:SetHeight(20)
-        cb:SetPoint("TOPLEFT", condFrame, "TOPLEFT", x, y)
-        cb.text = cb:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        cb.text:SetPoint("LEFT", cb, "RIGHT", 4, 0)
-        cb.text:SetText(label)
-        return cb
-    end
-    local function MakeComparatorDD(name, x, y, width)
-        local dd = CreateFrame("Frame", name, condFrame, "UIDropDownMenuTemplate")
-        dd:SetPoint("TOPLEFT", condFrame, "TOPLEFT", x, y)
-        if UIDropDownMenu_SetWidth then pcall(UIDropDownMenu_SetWidth, width or 55, dd) end
-        return dd
-    end
-    local function MakeSmallEdit(name, x, y, width)
-        local eb = CreateFrame("EditBox", name, condFrame, "InputBoxTemplate")
-        eb:SetWidth(width or 44)
-        eb:SetHeight(18)
-        eb:SetPoint("TOPLEFT", condFrame, "TOPLEFT", x, y)
-        eb:SetAutoFocus(false)
-        eb:SetJustifyH("CENTER")
-        eb:SetFontObject("GameFontNormalSmall")
-        return eb
+    -- helpers (parent to the scrollable content area)
+	local function _Parent()
+		return (condFrame and condFrame._condArea) or condFrame
+	end
+
+	local function MakeCheck(name, label, x, y)
+		local parent = _Parent()
+		local cb = CreateFrame("CheckButton", name, parent, "UICheckButtonTemplate")
+		cb:SetWidth(20); cb:SetHeight(20)
+		cb:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+		cb.text = cb:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		cb.text:SetPoint("LEFT", cb, "RIGHT", 4, 0)
+		cb.text:SetText(label)
+		return cb
+	end
+
+	local function MakeComparatorDD(name, x, y, width)
+		local parent = _Parent()
+		local dd = CreateFrame("Frame", name, parent, "UIDropDownMenuTemplate")
+		dd:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+		if UIDropDownMenu_SetWidth then pcall(UIDropDownMenu_SetWidth, width or 55, dd) end
+		return dd
+	end
+
+	local function MakeSmallEdit(name, x, y, width)
+		local parent = _Parent()
+		local eb = CreateFrame("EditBox", name, parent, "InputBoxTemplate")
+		eb:SetWidth(width or 44)
+		eb:SetHeight(18)
+		eb:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+		eb:SetAutoFocus(false)
+		eb:SetJustifyH("CENTER")
+		eb:SetFontObject("GameFontNormalSmall")
+		return eb
+	end
+
+	    -- renders a small bold white title with a "split" separator line that does not pass under the text
+        local function MakeSeparatorRow(parent, y, title, drawLine)
+        drawLine = (drawLine ~= false)
+        local holder = CreateFrame("Frame", nil, parent)
+        holder:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y)
+        holder:SetPoint("TOPRIGHT", parent, "TOPRIGHT", 0, y)
+        holder:SetHeight(16)
+
+        local label = holder:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        label:SetPoint("TOPLEFT", holder, "TOPLEFT", 0, 0)
+        label:SetJustifyH("LEFT")
+        label:SetText("|cffffffff" .. (title or "") .. "|r")
+
+        local lineY = -8
+        local lineL = holder:CreateTexture(nil, "ARTWORK")
+        lineL:SetHeight(1); lineL:SetTexture(1,1,1); lineL:SetVertexColor(1,1,1,0.25)
+        lineL:SetPoint("TOPLEFT", holder, "TOPLEFT", 0, lineY)
+        lineL:SetPoint("TOPRIGHT", label, "TOPLEFT", -6, lineY)
+
+        local lineR = holder:CreateTexture(nil, "ARTWORK")
+        lineR:SetHeight(1); lineR:SetTexture(1,1,1); lineR:SetVertexColor(1,1,1,0.25)
+        lineR:SetPoint("TOPLEFT", label, "TOPRIGHT", 6, lineY)
+        lineR:SetPoint("TOPRIGHT", holder, "TOPRIGHT", 0, lineY)
+
+        if not drawLine then lineL:Hide(); lineR:Hide() end
+
+        holder._label = label
+        holder._lineL = lineL
+        holder._lineR = lineR
+        holder:Hide() -- start hidden; visibility handled by manager
+        return holder
     end
 
-    -- row positions
-    local row1_y, row2_y, row3_y, row4_y, row5_y = -145, -170, -195, -220, -245
+    local function SetSeparatorLineVisible(sep, visible)
+        if not sep then return end
+        if visible then
+            if sep._lineL then sep._lineL:Show() end
+            if sep._lineR then sep._lineR:Show() end
+        else
+            if sep._lineL then sep._lineL:Hide() end
+            if sep._lineR then sep._lineR:Hide() end
+        end
+    end
+	
+        -- === Separator Y positions (must exist before we create any separators) ===
+    -- Keep these right next to the row positions so spacing stays in sync.
+    local srow1_y, srow2_y, srow3_y, srow4_y, srow5_y  = -5, -45, -85, -125, -165
+    local srow6_y, srow7_y, srow8_y, srow9_y, srow10_y = -205, -245, -285, -325, -365
+    local srow11_y, srow12_y, srow13_y, srow14_y, srow15_y = -405, -445, -485, -525, -565
+    local srow16_y, srow17_y, srow18_y, srow19_y, srow20_y = -605, -645, -685, -725, -765
+
+    -- Assign into the upvalue so other functions (defined later) can see it.
+    srows = {
+        srow1_y, srow2_y, srow3_y, srow4_y, srow5_y,
+        srow6_y, srow7_y, srow8_y, srow9_y, srow10_y,
+        srow11_y, srow12_y, srow13_y, srow14_y, srow15_y,
+        srow16_y, srow17_y, srow18_y, srow19_y, srow20_y
+    }
+
+    -- === Per-type separator caches (ability/aura are independent)
+    condFrame._seps = condFrame._seps or { ability = {}, aura = {} }
+
+    local function _EnsureSep(typeKey, slot)
+        local list = condFrame._seps[typeKey]
+        if not list[slot] then
+            local y = srows[slot] or srows[1]
+            list[slot] = MakeSeparatorRow(_Parent(), y, "", true)
+            list[slot]._visible = false
+            list[slot]._lineOn  = true
+        end
+        return list[slot]
+    end
+
+    -- Public: define/update a separator (title, line on/off, visible)
+    -- typeKey = "ability" | "aura"; slot = 1..20
+    local function SetSeparator(typeKey, slot, title, showLine, isVisible)
+        if typeKey ~= "ability" and typeKey ~= "aura" then return end
+        if slot < 1 or slot > 20 then return end
+        local sep = _EnsureSep(typeKey, slot)
+        if sep._label then sep._label:SetText("|cffffffff" .. (title or "") .. "|r") end
+        sep._lineOn  = (showLine ~= false)
+        SetSeparatorLineVisible(sep, sep._lineOn)
+        sep._visible = (isVisible and true) or false
+        if sep._visible then sep:Show() else sep:Hide() end
+        return sep
+    end
+
+    -- Exported (not local): UpdateConditionsUI (outside) calls this.
+    -- We assign to the upvalue defined at file scope in Patch 1.
+    ShowSeparatorsForType = function(typeKey)
+        -- Hide every separator first
+        for _, list in pairs(condFrame._seps) do
+            for _, sep in pairs(list) do
+                sep:Hide()
+            end
+        end
+        -- Then reveal only this type’s visible ones (with line state)
+        local mine = condFrame._seps[typeKey] or {}
+        for _, sep in pairs(mine) do
+            if sep._visible then
+                SetSeparatorLineVisible(sep, sep._lineOn)
+                sep:Show()
+            end
+        end
+    end
+
+    -- row positions (pre-made 10 rows; you can adjust later)
+	local row1_y, row2_y, row3_y, row4_y, row5_y  = -20, -60, -100, -140, -180
+	local row6_y, row7_y, row8_y, row9_y, row10_y = -220, -260, -300, -340, -380
+	local row11_y, row12_y, row13_y, row14_y, row15_y = -420, -460, -500, -540, -580
+	local row16_y, row17_y, row18_y, row19_y, row20_y = -620, -660, -700, -740, -780
+	condFrame._rowY = { [7] = row7_y, [10] = row10_y }
 
     -- ability rows
     if GetNampowerVersion then
-        condFrame.cond_ability_usable = MakeCheck("DoiteCond_Ability_Usable", "Usable", 20, row1_y)
+        condFrame.cond_ability_usable = MakeCheck("DoiteCond_Ability_Usable", "Usable", 0, row1_y)
     else
-        condFrame.cond_ability_usable = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        condFrame.cond_ability_usable:SetPoint("TOPLEFT", condFrame, "TOPLEFT", 24, row1_y + 3)
+        condFrame.cond_ability_usable = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        condFrame.cond_ability_usable:SetPoint("TOPLEFT", _Parent(), "TOPLEFT", 4, row1_y + 3)
         condFrame.cond_ability_usable:SetText("(Usable req. Nampower mod)")
         condFrame.cond_ability_usable:SetWidth(80)
     end
-    condFrame.cond_ability_notcd  = MakeCheck("DoiteCond_Ability_NotCD", "Not on cooldown", 110, row1_y)
-    condFrame.cond_ability_oncd   = MakeCheck("DoiteCond_Ability_OnCD", "On cooldown", 230, row1_y)
+    condFrame.cond_ability_notcd  = MakeCheck("DoiteCond_Ability_NotCD", "Not on cooldown", 70, row1_y)
+    condFrame.cond_ability_oncd   = MakeCheck("DoiteCond_Ability_OnCD", "On cooldown", 190, row1_y)
+	SetSeparator("ability", 1, "USABILITY & COOLDOWN", true, true)
 
-    condFrame.cond_ability_incombat   = MakeCheck("DoiteCond_Ability_InCombat", "In combat", 20, row2_y)
-    condFrame.cond_ability_outcombat  = MakeCheck("DoiteCond_Ability_OutCombat", "Out of combat", 110, row2_y)
+    condFrame.cond_ability_incombat   = MakeCheck("DoiteCond_Ability_InCombat", "In combat", 0, row2_y)
+    condFrame.cond_ability_outcombat  = MakeCheck("DoiteCond_Ability_OutCombat", "Out of combat", 80, row2_y)
+	SetSeparator("ability", 2, "COMBAT STATE", true, true)
 
-    condFrame.cond_ability_target_help = MakeCheck("DoiteCond_Ability_TargetHelp", "Target (help)", 20, row3_y)
-    condFrame.cond_ability_target_harm = MakeCheck("DoiteCond_Ability_TargetHarm", "Target (harm)", 120, row3_y)
-    condFrame.cond_ability_target_self = MakeCheck("DoiteCond_Ability_TargetSelf", "Target (self)", 220, row3_y)
+    condFrame.cond_ability_target_help = MakeCheck("DoiteCond_Ability_TargetHelp", "Target (help)", 0, row3_y)
+    condFrame.cond_ability_target_harm = MakeCheck("DoiteCond_Ability_TargetHarm", "Target (harm)", 95, row3_y)
+    condFrame.cond_ability_target_self = MakeCheck("DoiteCond_Ability_TargetSelf", "Target (self)", 200, row3_y)
+	SetSeparator("ability", 3, "TARGET CONDITIONS", true, true)
 
-    condFrame.cond_ability_glow = MakeCheck("DoiteCond_Ability_Glow", "Glow", 20, row4_y)
-    condFrame.cond_ability_power = MakeCheck("DoiteCond_Ability_PowerCB", "Power", 90, row4_y)
-    condFrame.cond_ability_power_comp = MakeComparatorDD("DoiteCond_Ability_PowerComp", 155, row4_y+3, 50)
-    condFrame.cond_ability_power_val  = MakeSmallEdit("DoiteCond_Ability_PowerVal", 250, row4_y-2, 40)
-    condFrame.cond_ability_power_val_enter = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    condFrame.cond_ability_power_val_enter:SetPoint("LEFT", condFrame.cond_ability_power_val, "RIGHT", 4, 0)
-    condFrame.cond_ability_power_val_enter:SetText("(%)")
-    condFrame.cond_ability_power_val_enter:Hide()
-
-    condFrame.cond_ability_slider = MakeCheck("DoiteCond_Ability_Slider", "Soon off CD", 90, row5_y)
-    condFrame.cond_ability_slider_dir = CreateFrame("Frame", "DoiteCond_Ability_SliderDir", condFrame, "UIDropDownMenuTemplate")
-    condFrame.cond_ability_slider_dir:SetPoint("TOPLEFT", condFrame, "TOPLEFT", 170, row5_y+3)
+    condFrame.cond_ability_glow = MakeCheck("DoiteCond_Ability_Glow", "Glow", 0, row4_y)
+	condFrame.cond_ability_greyscale = MakeCheck("DoiteCond_Ability_Greyscale", "Grey", 70, row4_y)
+	condFrame.cond_ability_slider_glow = MakeCheck("DoiteCond_Ability_SliderGlow", "CD Glow", 140, row4_y)
+    condFrame.cond_ability_slider_grey = MakeCheck("DoiteCond_Ability_SliderGrey", "CD Grey", 220, row4_y)
+	SetSeparator("ability", 4, "VISUAL EFFECTS", true, true)
+	
+	condFrame.cond_ability_slider = MakeCheck("DoiteCond_Ability_Slider", "Soon off CD", 0, row5_y)
+    condFrame.cond_ability_slider_dir = CreateFrame("Frame", "DoiteCond_Ability_SliderDir", _Parent(), "UIDropDownMenuTemplate")
+    condFrame.cond_ability_slider_dir:SetPoint("LEFT", condFrame.cond_ability_slider, "RIGHT", 50, -3)
     if UIDropDownMenu_SetWidth then pcall(UIDropDownMenu_SetWidth, 60, condFrame.cond_ability_slider_dir) end
-
-    condFrame.cond_ability_remaining_cb   = MakeCheck("DoiteCond_Ability_RemainingCB", "Remaining", 90, row5_y)
-    condFrame.cond_ability_remaining_comp = MakeComparatorDD("DoiteCond_Ability_RemComp", 155, row5_y+3, 50)
-    condFrame.cond_ability_remaining_val  = MakeSmallEdit("DoiteCond_Ability_RemVal", 250, row5_y-2, 40)
-    condFrame.cond_ability_remaining_val_enter = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_ability_remaining_cb   = MakeCheck("DoiteCond_Ability_RemainingCB", "Remaining", 0, row5_y)
+    condFrame.cond_ability_remaining_comp = MakeComparatorDD("DoiteCond_Ability_RemComp", 65, row5_y+3, 50)
+    condFrame.cond_ability_remaining_val  = MakeSmallEdit("DoiteCond_Ability_RemVal", 160, row5_y-2, 40)
+    condFrame.cond_ability_remaining_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     condFrame.cond_ability_remaining_val_enter:SetPoint("LEFT", condFrame.cond_ability_remaining_val, "RIGHT", 4, 0)
     condFrame.cond_ability_remaining_val_enter:SetText("(sec.)")
     condFrame.cond_ability_remaining_val_enter:Hide()
+	SetSeparator("ability", 5, "REMAINING TIME", true, true)
+	
+    condFrame.cond_ability_power = MakeCheck("DoiteCond_Ability_PowerCB", "Power", 0, row6_y)
+    condFrame.cond_ability_power_comp = MakeComparatorDD("DoiteCond_Ability_PowerComp", 65, row6_y+3, 50)
+    condFrame.cond_ability_power_val  = MakeSmallEdit("DoiteCond_Ability_PowerVal", 160, row6_y-2, 40)
+    condFrame.cond_ability_power_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_ability_power_val_enter:SetPoint("LEFT", condFrame.cond_ability_power_val, "RIGHT", 4, 0)
+    condFrame.cond_ability_power_val_enter:SetText("(%)")
+    condFrame.cond_ability_power_val_enter:Hide()
+	SetSeparator("ability", 6, "RESOURCE", true, true)
+	
+	condFrame.cond_ability_hp_my   = MakeCheck("DoiteCond_Ability_HP_My", "My HP", 0, row7_y)
+    condFrame.cond_ability_hp_tgt  = MakeCheck("DoiteCond_Ability_HP_Tgt", "Target HP", 65, row7_y)
+    condFrame.cond_ability_hp_comp = MakeComparatorDD("DoiteCond_Ability_HP_Comp", 130, row7_y+3, 50)
+    condFrame.cond_ability_hp_val  = MakeSmallEdit("DoiteCond_Ability_HP_Val", 225, row7_y-2, 40)
+    condFrame.cond_ability_hp_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_ability_hp_val_enter:SetPoint("LEFT", condFrame.cond_ability_hp_val, "RIGHT", 4, 0)
+    condFrame.cond_ability_hp_val_enter:SetText("(%)")
+    condFrame.cond_ability_hp_comp:Hide()
+    condFrame.cond_ability_hp_val:Hide()
+    condFrame.cond_ability_hp_val_enter:Hide()
+	SetSeparator("ability", 7, "HEALTH CONDITION", true, true)
+	
 
-    condFrame.cond_ability_greyscale = MakeCheck("DoiteCond_Ability_Greyscale", "Grey", 20, row5_y)
+	condFrame.cond_ability_text_time = MakeCheck("DoiteCond_Ability_TextTime", "Text: Time remaining", 0, row8_y)
+	SetSeparator("ability", 8, "ICON TEXT", true, true)
+
+
+    condFrame.cond_ability_cp_cb   = MakeCheck("DoiteCond_Ability_CP_CB", "Combo points", 0, row9_y)
+    condFrame.cond_ability_cp_comp = MakeComparatorDD("DoiteCond_Ability_CP_Comp", 85, row9_y+3, 50)
+    condFrame.cond_ability_cp_val  = MakeSmallEdit("DoiteCond_Ability_CP_Val", 180, row9_y-2, 40)
+    condFrame.cond_ability_cp_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_ability_cp_val_enter:SetPoint("LEFT", condFrame.cond_ability_cp_val, "RIGHT", 4, 0)
+    condFrame.cond_ability_cp_val_enter:SetText("(#)")
+    condFrame.cond_ability_cp_val_enter:Hide()
+	SetSeparator("ability", 9, "CLASS-SPECIFIC", true, true)
 
     -- === Buff/Debuff rows ===
-    condFrame.cond_aura_found   = MakeCheck("DoiteCond_Aura_Found", "Aura found", 20, row1_y)
-	condFrame.cond_aura_missing = MakeCheck("DoiteCond_Aura_Missing", "Aura missing", 110, row1_y)
-	condFrame.cond_aura_tip = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	condFrame.cond_aura_tip:SetPoint("LEFT", condFrame.cond_aura_missing.text, "RIGHT", 10, 0)
+    condFrame.cond_aura_found   = MakeCheck("DoiteCond_Aura_Found", "Aura found", 0, row1_y)
+	condFrame.cond_aura_missing = MakeCheck("DoiteCond_Aura_Missing", "Aura missing", 85, row1_y)
+	condFrame.cond_aura_tip = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	condFrame.cond_aura_tip:SetPoint("LEFT", condFrame.cond_aura_missing.text, "RIGHT", 2, 0)
 	condFrame.cond_aura_tip:SetText("(to show icon, aura must be applied once)")
 	condFrame.cond_aura_tip:SetWidth(120)
 	condFrame.cond_aura_tip:Hide()
+	SetSeparator("aura", 1, "AURA PRESENCE", true, true)
 
+    condFrame.cond_aura_incombat   = MakeCheck("DoiteCond_Aura_InCombat", "In combat", 0, row2_y)
+    condFrame.cond_aura_outcombat  = MakeCheck("DoiteCond_Aura_OutCombat", "Out of combat", 80, row2_y)
+	SetSeparator("aura", 2, "COMBAT STATE", true, true)
 
-    condFrame.cond_aura_incombat   = MakeCheck("DoiteCond_Aura_InCombat", "In combat", 20, row2_y)
-    condFrame.cond_aura_outcombat  = MakeCheck("DoiteCond_Aura_OutCombat", "Out of combat", 110, row2_y)
+	condFrame.cond_aura_target_help = MakeCheck("DoiteCond_Aura_TargetHelp", "Target (help)", 0, row3_y)
+	condFrame.cond_aura_target_harm = MakeCheck("DoiteCond_Aura_TargetHarm", "Target (harm)", 94, row3_y)
+	condFrame.cond_aura_onself      = MakeCheck("DoiteCond_Aura_OnSelf", "On player (self)", 192, row3_y)
+	SetSeparator("aura", 3, "TARGET CONDITIONS", true, true)
 
-	condFrame.cond_aura_target_help = MakeCheck("DoiteCond_Aura_TargetHelp", "Target (help)", 20, row3_y)
-	condFrame.cond_aura_target_harm = MakeCheck("DoiteCond_Aura_TargetHarm", "Target (harm)", 120, row3_y)
-	condFrame.cond_aura_onself      = MakeCheck("DoiteCond_Aura_OnSelf", "On player (self)", 220, row3_y)
+    condFrame.cond_aura_glow = MakeCheck("DoiteCond_Aura_Glow", "Glow", 0, row4_y)
+    condFrame.cond_aura_greyscale = MakeCheck("DoiteCond_Aura_Greyscale", "Grey", 70, row4_y)	
+	SetSeparator("aura", 4, "VISUAL EFFECTS", true, true)
 
-    condFrame.cond_aura_stacks_cb   = MakeCheck("DoiteCond_Aura_StacksCB", "Stacks", 90, row4_y)
-    condFrame.cond_aura_stacks_comp = MakeComparatorDD("DoiteCond_Aura_StacksComp", 155, row4_y+3, 50)
-    condFrame.cond_aura_stacks_val  = MakeSmallEdit("DoiteCond_Aura_StacksVal", 250, row4_y-2, 40)
-    condFrame.cond_aura_stacks_val_enter = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    condFrame.cond_aura_stacks_val_enter:SetPoint("LEFT", condFrame.cond_aura_stacks_val, "RIGHT", 4, 0)
-    condFrame.cond_aura_stacks_val_enter:SetText("(#)")
-    condFrame.cond_aura_stacks_val_enter:Hide()
-
-    condFrame.cond_aura_glow = MakeCheck("DoiteCond_Aura_Glow", "Glow", 20, row4_y)
-    condFrame.cond_aura_remaining_cb   = MakeCheck("DoiteCond_Aura_RemCB", "Remaining", 90, row5_y)
-    condFrame.cond_aura_remaining_comp = MakeComparatorDD("DoiteCond_Aura_RemComp", 155, row5_y+3, 50)
-    condFrame.cond_aura_remaining_val  = MakeSmallEdit("DoiteCond_Aura_RemVal", 250, row5_y-2, 40)
-    condFrame.cond_aura_remaining_val_enter = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_aura_power = MakeCheck("DoiteCond_Aura_PowerCB", "Power", 0, row5_y)
+    condFrame.cond_aura_power_comp = MakeComparatorDD("DoiteCond_Aura_PowerComp", 65, row5_y+3, 50)
+    condFrame.cond_aura_power_val  = MakeSmallEdit("DoiteCond_Aura_PowerVal", 160, row5_y-2, 40)
+    condFrame.cond_aura_power_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_aura_power_val_enter:SetPoint("LEFT", condFrame.cond_aura_power_val, "RIGHT", 4, 0)
+    condFrame.cond_aura_power_val_enter:SetText("(%)")
+    condFrame.cond_aura_power_comp:Hide()
+    condFrame.cond_aura_power_val:Hide()
+    condFrame.cond_aura_power_val_enter:Hide()
+	SetSeparator("aura", 5, "RESOURCE", true, true)
+	
+    condFrame.cond_aura_hp_my   = MakeCheck("DoiteCond_Aura_HP_My", "My HP", 0, row6_y)
+    condFrame.cond_aura_hp_tgt  = MakeCheck("DoiteCond_Aura_HP_Tgt", "Target HP", 65, row6_y)
+    condFrame.cond_aura_hp_comp = MakeComparatorDD("DoiteCond_Aura_HP_Comp", 130, row6_y+3, 50)
+    condFrame.cond_aura_hp_val  = MakeSmallEdit("DoiteCond_Aura_HP_Val", 225, row6_y-2, 40)
+    condFrame.cond_aura_hp_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_aura_hp_val_enter:SetPoint("LEFT", condFrame.cond_aura_hp_val, "RIGHT", 4, 0)
+    condFrame.cond_aura_hp_val_enter:SetText("(%)")
+    condFrame.cond_aura_hp_comp:Hide()
+    condFrame.cond_aura_hp_val:Hide()
+    condFrame.cond_aura_hp_val_enter:Hide()	
+	SetSeparator("aura", 6, "HEALTH CONDITION", true, true)
+	
+	condFrame.cond_aura_remaining_cb   = MakeCheck("DoiteCond_Aura_RemCB", "Remaining", 0, row7_y)
+    condFrame.cond_aura_remaining_comp = MakeComparatorDD("DoiteCond_Aura_RemComp", 65, row7_y+3, 50)
+    condFrame.cond_aura_remaining_val  = MakeSmallEdit("DoiteCond_Aura_RemVal", 160, row7_y-2, 40)
+    condFrame.cond_aura_remaining_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     condFrame.cond_aura_remaining_val_enter:SetPoint("LEFT", condFrame.cond_aura_remaining_val, "RIGHT", 4, 0)
     condFrame.cond_aura_remaining_val_enter:SetText("(sec.)")
     condFrame.cond_aura_remaining_val_enter:Hide()
-
-    condFrame.cond_aura_greyscale = MakeCheck("DoiteCond_Aura_Greyscale", "Grey", 20, row5_y)
+	condFrame.cond_aura_stacks_cb   = MakeCheck("DoiteCond_Aura_StacksCB", "Stacks", 0, row8_y)
+    condFrame.cond_aura_stacks_comp = MakeComparatorDD("DoiteCond_Aura_StacksComp", 65, row8_y+3, 50)
+    condFrame.cond_aura_stacks_val  = MakeSmallEdit("DoiteCond_Aura_StacksVal", 160, row8_y-2, 40)
+    condFrame.cond_aura_stacks_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_aura_stacks_val_enter:SetPoint("LEFT", condFrame.cond_aura_stacks_val, "RIGHT", 4, 0)
+    condFrame.cond_aura_stacks_val_enter:SetText("(#)")
+    condFrame.cond_aura_stacks_val_enter:Hide()
+    condFrame.cond_aura_text_time = MakeCheck("DoiteCond_Aura_TextTime", "Text: Time remaining", 0, row9_y)
+    condFrame.cond_aura_text_stack = MakeCheck("DoiteCond_Aura_TextStack", "Text: Stack counter", 150, row9_y)
+	SetSeparator("aura", 7, "TIME REMAINING & STACKS", true, true)
+	
+	condFrame.cond_aura_cp_cb   = MakeCheck("DoiteCond_Aura_CP_CB", "Combo points", 0, row10_y)
+    condFrame.cond_aura_cp_comp = MakeComparatorDD("DoiteCond_Aura_CP_Comp", 85, row10_y+3, 50)
+    condFrame.cond_aura_cp_val  = MakeSmallEdit("DoiteCond_Aura_CP_Val", 180, row10_y-2, 40)
+    condFrame.cond_aura_cp_val_enter = _Parent():CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condFrame.cond_aura_cp_val_enter:SetPoint("LEFT", condFrame.cond_aura_cp_val, "RIGHT", 4, 0)
+    condFrame.cond_aura_cp_val_enter:SetText("(#)")
+    condFrame.cond_aura_cp_val_enter:Hide()
+	SetSeparator("aura", 10, "CLASS-SPECIFIC", true, true)	
 
     ----------------------------------------------------------------
     -- 'Form' dropdowns
     ----------------------------------------------------------------
-    condFrame.cond_ability_formDD = CreateFrame("Frame", "DoiteCond_Ability_FormDD", condFrame, "UIDropDownMenuTemplate")
-    condFrame.cond_ability_formDD:SetPoint("TOPLEFT", condFrame, "TOPLEFT", 200, row2_y+3)
-    if UIDropDownMenu_SetWidth then pcall(UIDropDownMenu_SetWidth, 90, condFrame.cond_ability_formDD) end
-    condFrame.cond_ability_formDD:Hide()
+    condFrame.cond_ability_formDD = CreateFrame("Frame", "DoiteCond_Ability_FormDD", _Parent(), "UIDropDownMenuTemplate")
+	condFrame.cond_ability_formDD:SetPoint("TOPLEFT", _Parent(), "TOPLEFT", 165, row2_y+3)
+	if UIDropDownMenu_SetWidth then pcall(UIDropDownMenu_SetWidth, 90, condFrame.cond_ability_formDD) end
+	condFrame.cond_ability_formDD:Hide()
 	ClearDropdown(condFrame.cond_ability_formDD)
 	ClearDropdown(condFrame.cond_aura_formDD)
 
-    condFrame.cond_aura_formDD = CreateFrame("Frame", "DoiteCond_Aura_FormDD", condFrame, "UIDropDownMenuTemplate")
-    condFrame.cond_aura_formDD:SetPoint("TOPLEFT", condFrame, "TOPLEFT", 200, row2_y+3)
-    if UIDropDownMenu_SetWidth then pcall(UIDropDownMenu_SetWidth, 90, condFrame.cond_aura_formDD) end
-    condFrame.cond_aura_formDD:Hide()
+	condFrame.cond_aura_formDD = CreateFrame("Frame", "DoiteCond_Aura_FormDD", _Parent(), "UIDropDownMenuTemplate")
+	condFrame.cond_aura_formDD:SetPoint("TOPLEFT", _Parent(), "TOPLEFT", 165, row2_y+3)
+	if UIDropDownMenu_SetWidth then pcall(UIDropDownMenu_SetWidth, 90, condFrame.cond_aura_formDD) end
+	condFrame.cond_aura_formDD:Hide()
 	ClearDropdown(condFrame.cond_ability_formDD)
 	ClearDropdown(condFrame.cond_aura_formDD)
 
@@ -645,6 +867,7 @@ local function CreateConditionsUI()
 			end
 		end)
 	end
+	
     condFrame.cond_ability_notcd:SetScript("OnClick", function()
         if this:GetChecked() then
 			if GetNampowerVersion then
@@ -656,6 +879,7 @@ local function CreateConditionsUI()
             SetExclusiveAbilityMode(nil)
         end
     end)
+	
     condFrame.cond_ability_oncd:SetScript("OnClick", function()
         if this:GetChecked() then
 			if GetNampowerVersion then
@@ -863,6 +1087,7 @@ local function CreateConditionsUI()
         SafeRefresh()
 		SafeEvaluate()
     end)
+	
     condFrame.cond_aura_greyscale:SetScript("OnClick", function()
         if not currentKey then this:SetChecked(false) return end
         local d = EnsureDBEntry(currentKey)
@@ -872,6 +1097,107 @@ local function CreateConditionsUI()
         UpdateCondFrameForKey(currentKey)
         SafeRefresh()
 		SafeEvaluate()
+    end)
+
+    -- === Combo points enable toggles ===
+    condFrame.cond_ability_cp_cb:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.cpEnabled = this:GetChecked() and true or false
+        UpdateCondFrameForKey(currentKey); SafeRefresh(); SafeEvaluate()
+    end)
+    condFrame.cond_aura_cp_cb:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.cpEnabled = this:GetChecked() and true or false
+        UpdateCondFrameForKey(currentKey); SafeRefresh(); SafeEvaluate()
+    end)
+
+    -- === HP selectors (mutually exclusive, same X position widgets) ===
+    local function _AbilityHP_Update(which)
+        local d = EnsureDBEntry(currentKey); d.conditions.ability = d.conditions.ability or {}
+        if which == "my" then
+            condFrame.cond_ability_hp_tgt:SetChecked(false)
+            d.conditions.ability.hpMode = "my"
+        elseif which == "tgt" then
+            condFrame.cond_ability_hp_my:SetChecked(false)
+            d.conditions.ability.hpMode = "target"
+        else
+            d.conditions.ability.hpMode = nil
+        end
+        UpdateCondFrameForKey(currentKey); SafeRefresh(); SafeEvaluate()
+    end
+    condFrame.cond_ability_hp_my:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        if this:GetChecked() then _AbilityHP_Update("my") else _AbilityHP_Update(nil) end
+    end)
+    condFrame.cond_ability_hp_tgt:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        if this:GetChecked() then _AbilityHP_Update("tgt") else _AbilityHP_Update(nil) end
+    end)
+
+    local function _AuraHP_Update(which)
+        local d = EnsureDBEntry(currentKey); d.conditions.aura = d.conditions.aura or {}
+        if which == "my" then
+            condFrame.cond_aura_hp_tgt:SetChecked(false)
+            d.conditions.aura.hpMode = "my"
+        elseif which == "tgt" then
+            condFrame.cond_aura_hp_my:SetChecked(false)
+            d.conditions.aura.hpMode = "target"
+        else
+            d.conditions.aura.hpMode = nil
+        end
+        UpdateCondFrameForKey(currentKey); SafeRefresh(); SafeEvaluate()
+    end
+    condFrame.cond_aura_hp_my:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        if this:GetChecked() then _AuraHP_Update("my") else _AuraHP_Update(nil) end
+    end)
+    condFrame.cond_aura_hp_tgt:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        if this:GetChecked() then _AuraHP_Update("tgt") else _AuraHP_Update(nil) end
+    end)
+
+    -- === Ability slider extras ===
+    condFrame.cond_ability_slider_glow:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.sliderGlow = this:GetChecked() and true or false
+        SafeRefresh(); SafeEvaluate()
+    end)
+    condFrame.cond_ability_slider_grey:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.sliderGrey = this:GetChecked() and true or false
+        SafeRefresh(); SafeEvaluate()
+    end)
+
+    -- === Text flags (ability/aura) ===
+    condFrame.cond_ability_text_time:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.textTimeRemaining = this:GetChecked() and true or false
+        SafeRefresh(); SafeEvaluate()
+    end)
+    condFrame.cond_aura_text_time:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.textTimeRemaining = this:GetChecked() and true or false
+        SafeRefresh(); SafeEvaluate()
+    end)
+    condFrame.cond_aura_text_stack:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.textStackCounter = this:GetChecked() and true or false
+        SafeRefresh(); SafeEvaluate()
+    end)
+
+    -- === Aura Power toggle ===
+    condFrame.cond_aura_power:SetScript("OnClick", function()
+        if not currentKey then this:SetChecked(false) return end
+        local d = EnsureDBEntry(currentKey); d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.powerEnabled = this:GetChecked() and true or false
+        UpdateCondFrameForKey(currentKey); SafeRefresh(); SafeEvaluate()
     end)
 
     -- dropdown initializers
@@ -968,8 +1294,180 @@ local function CreateConditionsUI()
         SafeRefresh()
 		SafeEvaluate()
     end)
+	
+	    -- Combo points comparators
+    InitComparatorDD(condFrame.cond_ability_cp_comp, function(picked)
+        if not currentKey then return end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.cpComp = picked
+        SafeRefresh(); SafeEvaluate()
+    end)
+    InitComparatorDD(condFrame.cond_aura_cp_comp, function(picked)
+        if not currentKey then return end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.cpComp = picked
+        SafeRefresh(); SafeEvaluate()
+    end)
+
+    -- HP comparators
+    InitComparatorDD(condFrame.cond_ability_hp_comp, function(picked)
+        if not currentKey then return end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.hpComp = picked
+        SafeRefresh(); SafeEvaluate()
+    end)
+    InitComparatorDD(condFrame.cond_aura_hp_comp, function(picked)
+        if not currentKey then return end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.hpComp = picked
+        SafeRefresh(); SafeEvaluate()
+    end)
+
+    -- Aura Power comparator
+    InitComparatorDD(condFrame.cond_aura_power_comp, function(picked)
+        if not currentKey then return end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.powerComp = picked
+        SafeRefresh(); SafeEvaluate()
+    end)
 
     -- editbox commit handlers (enter / focus lost)
+	    -- Ability CP value
+    condFrame.cond_ability_cp_val:SetScript("OnEnterPressed", function()
+        if not currentKey then return end
+        local v = tonumber(this:GetText())
+        if not v then
+            local d = EnsureDBEntry(currentKey)
+            this:SetText(tostring((d.conditions.ability and d.conditions.ability.cpVal) or 0))
+            return
+        end
+        if v < 0 then v = 0 end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.cpVal = v
+        SafeRefresh(); SafeEvaluate()
+        UpdateCondFrameForKey(currentKey)
+        if this.ClearFocus then this:ClearFocus() end
+    end)
+    do
+        local _guard=false
+        condFrame.cond_ability_cp_val:SetScript("OnEditFocusLost", function()
+            if _guard then return end; _guard=true
+            this:GetScript("OnEnterPressed")()
+            _guard=false
+        end)
+    end
+
+    -- Aura CP value
+    condFrame.cond_aura_cp_val:SetScript("OnEnterPressed", function()
+        if not currentKey then return end
+        local v = tonumber(this:GetText())
+        if not v then
+            local d = EnsureDBEntry(currentKey)
+            this:SetText(tostring((d.conditions.aura and d.conditions.aura.cpVal) or 0))
+            return
+        end
+        if v < 0 then v = 0 end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.cpVal = v
+        SafeRefresh(); SafeEvaluate()
+        UpdateCondFrameForKey(currentKey)
+        if this.ClearFocus then this:ClearFocus() end
+    end)
+    do
+        local _guard=false
+        condFrame.cond_aura_cp_val:SetScript("OnEditFocusLost", function()
+            if _guard then return end; _guard=true
+            this:GetScript("OnEnterPressed")()
+            _guard=false
+        end)
+    end
+
+    -- Ability HP value (%)
+    condFrame.cond_ability_hp_val:SetScript("OnEnterPressed", function()
+        if not currentKey then return end
+        local v = tonumber(this:GetText())
+        if not v then
+            local d = EnsureDBEntry(currentKey)
+            this:SetText(tostring((d.conditions.ability and d.conditions.ability.hpVal) or 0))
+            return
+        end
+        if v < 0 then v = 0 end
+        if v > 100 then v = 100 end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.ability = d.conditions.ability or {}
+        d.conditions.ability.hpVal = v
+        SafeRefresh(); SafeEvaluate()
+        UpdateCondFrameForKey(currentKey)
+        if this.ClearFocus then this:ClearFocus() end
+    end)
+    do
+        local _guard=false
+        condFrame.cond_ability_hp_val:SetScript("OnEditFocusLost", function()
+            if _guard then return end; _guard=true
+            this:GetScript("OnEnterPressed")()
+            _guard=false
+        end)
+    end
+
+    -- Aura HP value (%)
+    condFrame.cond_aura_hp_val:SetScript("OnEnterPressed", function()
+        if not currentKey then return end
+        local v = tonumber(this:GetText())
+        if not v then
+            local d = EnsureDBEntry(currentKey)
+            this:SetText(tostring((d.conditions.aura and d.conditions.aura.hpVal) or 0))
+            return
+        end
+        if v < 0 then v = 0 end
+        if v > 100 then v = 100 end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.hpVal = v
+        SafeRefresh(); SafeEvaluate()
+        UpdateCondFrameForKey(currentKey)
+        if this.ClearFocus then this:ClearFocus() end
+    end)
+    do
+        local _guard=false
+        condFrame.cond_aura_hp_val:SetScript("OnEditFocusLost", function()
+            if _guard then return end; _guard=true
+            this:GetScript("OnEnterPressed")()
+            _guard=false
+        end)
+    end
+
+    -- Aura Power value (%)
+    condFrame.cond_aura_power_val:SetScript("OnEnterPressed", function()
+        if not currentKey then return end
+        local v = tonumber(this:GetText())
+        if not v then
+            local d = EnsureDBEntry(currentKey)
+            this:SetText(tostring((d.conditions.aura and d.conditions.aura.powerVal) or 0))
+            return
+        end
+        local d = EnsureDBEntry(currentKey)
+        d.conditions.aura = d.conditions.aura or {}
+        d.conditions.aura.powerVal = v
+        SafeRefresh(); SafeEvaluate()
+        UpdateCondFrameForKey(currentKey)
+        if this.ClearFocus then this:ClearFocus() end
+    end)
+    do
+        local _guard=false
+        condFrame.cond_aura_power_val:SetScript("OnEditFocusLost", function()
+            if _guard then return end; _guard=true
+            this:GetScript("OnEnterPressed")()
+            _guard=false
+        end)
+    end
+	
     condFrame.cond_ability_power_val:SetScript("OnEnterPressed", function()
         if not currentKey then return end
         local v = tonumber(this:GetText())
@@ -1149,34 +1647,6 @@ local function CreateConditionsUI()
 		SafeEvaluate()
     end)
 
-    -- Aura wiring (found/missing exclusives)
-    condFrame.cond_aura_found:SetScript("OnClick", function()
-        if this:GetChecked() then SetExclusiveAuraFoundMode("found") else SetExclusiveAuraFoundMode(nil) end
-    end)
-    condFrame.cond_aura_missing:SetScript("OnClick", function()
-        if this:GetChecked() then SetExclusiveAuraFoundMode("missing") else SetExclusiveAuraFoundMode(nil) end
-    end)
-
-	condFrame.cond_aura_incombat:SetScript("OnClick", function()
-		if not currentKey then this:SetChecked(false) return end
-		if not this:GetChecked() and not condFrame.cond_aura_outcombat:GetChecked() then
-			this:SetChecked(true)
-			return
-		end
-		SetCombatFlag("aura", "in", this:GetChecked())
-	end)
-
-	condFrame.cond_aura_outcombat:SetScript("OnClick", function()
-		if not currentKey then this:SetChecked(false) return end
-		if not this:GetChecked() and not condFrame.cond_aura_incombat:GetChecked() then
-			this:SetChecked(true)
-			return
-		end
-		SetCombatFlag("aura", "out", this:GetChecked())
-	end)
-
-    -- Aura target row wiring done above
-
     -- Form dropdowns are initialized/updated from UpdateConditionsUI
     condFrame.cond_ability_formDD:Hide()
 	ClearDropdown(condFrame.cond_ability_formDD)
@@ -1199,7 +1669,6 @@ local function CreateConditionsUI()
     condFrame.cond_ability_power_val:Hide()
     condFrame.cond_ability_power_val_enter:Hide()
     condFrame.cond_ability_glow:Hide()
-    condFrame.cond_ability_greyscale:Hide()
     condFrame.cond_ability_slider:Hide()
     condFrame.cond_ability_slider_dir:Hide()
     condFrame.cond_ability_remaining_cb:Hide()
@@ -1207,7 +1676,34 @@ local function CreateConditionsUI()
     condFrame.cond_ability_remaining_val:Hide()
     condFrame.cond_ability_remaining_val_enter:Hide()
     condFrame.cond_ability_greyscale:Hide()
+    condFrame.cond_ability_cp_cb:Hide()
+    condFrame.cond_ability_cp_comp:Hide()
+    condFrame.cond_ability_cp_val:Hide()
+    condFrame.cond_ability_cp_val_enter:Hide()
+    condFrame.cond_ability_hp_my:Hide()
+    condFrame.cond_ability_hp_tgt:Hide()
+    condFrame.cond_ability_hp_comp:Hide()
+    condFrame.cond_ability_hp_val:Hide()
+    condFrame.cond_ability_hp_val_enter:Hide()
+    condFrame.cond_ability_slider_glow:Hide()
+    condFrame.cond_ability_slider_grey:Hide()
+    condFrame.cond_ability_text_time:Hide()
 
+    condFrame.cond_aura_cp_cb:Hide()
+    condFrame.cond_aura_cp_comp:Hide()
+    condFrame.cond_aura_cp_val:Hide()
+    condFrame.cond_aura_cp_val_enter:Hide()
+    condFrame.cond_aura_hp_my:Hide()
+    condFrame.cond_aura_hp_tgt:Hide()
+    condFrame.cond_aura_hp_comp:Hide()
+    condFrame.cond_aura_hp_val:Hide()
+    condFrame.cond_aura_hp_val_enter:Hide()
+    condFrame.cond_aura_text_time:Hide()
+    condFrame.cond_aura_text_stack:Hide()
+    condFrame.cond_aura_power:Hide()
+    condFrame.cond_aura_power_comp:Hide()
+    condFrame.cond_aura_power_val:Hide()
+    condFrame.cond_aura_power_val_enter:Hide()
     condFrame.cond_aura_found:Hide()
     condFrame.cond_aura_missing:Hide()
     condFrame.cond_aura_incombat:Hide()
@@ -1216,7 +1712,6 @@ local function CreateConditionsUI()
 	condFrame.cond_aura_target_harm:Hide()
 	condFrame.cond_aura_onself:Hide()
     condFrame.cond_aura_glow:Hide()
-    condFrame.cond_aura_greyscale:Hide()
     condFrame.cond_aura_remaining_cb:Hide()
     condFrame.cond_aura_remaining_comp:Hide()
     condFrame.cond_aura_remaining_val:Hide()
@@ -1238,7 +1733,8 @@ local function UpdateConditionsUI(data)
     -- ABILITY
     if data.type == "Ability" then
         -- show rows
-        condFrame.cond_ability_usable:Show()
+        ShowSeparatorsForType("ability")
+		condFrame.cond_ability_usable:Show()
         condFrame.cond_ability_notcd:Show()
         condFrame.cond_ability_oncd:Show()
         condFrame.cond_ability_incombat:Show()
@@ -1345,11 +1841,126 @@ local function UpdateConditionsUI(data)
             condFrame.cond_ability_remaining_cb:Hide()
         end
 
+		        -- Row 7: Combo points (class-gated)
+        if _IsRogueOrDruid() then
+            condFrame.cond_ability_cp_cb:Show()
+            local cpOn = (c.ability and c.ability.cpEnabled) and true or false
+            condFrame.cond_ability_cp_cb:SetChecked(cpOn)
+            if cpOn then
+                condFrame.cond_ability_cp_comp:Show()
+                condFrame.cond_ability_cp_val:Show()
+                condFrame.cond_ability_cp_val_enter:Show()
+                local comp = (c.ability and c.ability.cpComp) or ""
+                UIDropDownMenu_SetSelectedValue(condFrame.cond_ability_cp_comp, comp)
+                UIDropDownMenu_SetText(comp, condFrame.cond_ability_cp_comp)
+                condFrame.cond_ability_cp_val:SetText(tostring((c.ability and c.ability.cpVal) or 0))
+            else
+                condFrame.cond_ability_cp_comp:Hide()
+                condFrame.cond_ability_cp_val:Hide()
+                condFrame.cond_ability_cp_val_enter:Hide()
+            end
+        else
+            condFrame.cond_ability_cp_cb:Hide()
+            condFrame.cond_ability_cp_comp:Hide()
+            condFrame.cond_ability_cp_val:Hide()
+            condFrame.cond_ability_cp_val_enter:Hide()
+        end
+
+        -- Row 8: HP selector (mutually exclusive)
+        condFrame.cond_ability_hp_my:Show()
+        condFrame.cond_ability_hp_tgt:Show()
+        local hpMode = c.ability and c.ability.hpMode or nil
+        condFrame.cond_ability_hp_my:SetChecked(hpMode == "my")
+        condFrame.cond_ability_hp_tgt:SetChecked(hpMode == "target")
+        if hpMode == "my" or hpMode == "target" then
+            condFrame.cond_ability_hp_comp:Show()
+            condFrame.cond_ability_hp_val:Show()
+            condFrame.cond_ability_hp_val_enter:Show()
+            local comp = (c.ability and c.ability.hpComp) or ""
+            UIDropDownMenu_SetSelectedValue(condFrame.cond_ability_hp_comp, comp)
+            UIDropDownMenu_SetText(comp, condFrame.cond_ability_hp_comp)
+            condFrame.cond_ability_hp_val:SetText(tostring((c.ability and c.ability.hpVal) or 0))
+        else
+            condFrame.cond_ability_hp_comp:Hide()
+            condFrame.cond_ability_hp_val:Hide()
+            condFrame.cond_ability_hp_val_enter:Hide()
+        end
+
+        -- Row 9: Slider extras (only when slider is enabled AND mode is usable/notcd)
+        local mode = (c.ability and c.ability.mode) or nil
+        local slidEnabled = (c.ability and c.ability.slider) and true or false
+        if slidEnabled and (mode == "usable" or mode == "notcd") then
+            condFrame.cond_ability_slider_glow:Show()
+            condFrame.cond_ability_slider_grey:Show()
+            condFrame.cond_ability_slider_glow:SetChecked((c.ability and c.ability.sliderGlow) or false)
+            condFrame.cond_ability_slider_grey:SetChecked((c.ability and c.ability.sliderGrey) or false)
+        else
+            condFrame.cond_ability_slider_glow:Hide()
+            condFrame.cond_ability_slider_grey:Hide()
+        end
+
+		-- Row 10: Text flag (time remaining only; abilities never have a stack text)
+		local mode = (c.ability and c.ability.mode) or nil
+		local slidEnabled = (c.ability and c.ability.slider) and true or false
+
+		local function _enableCheck(cb)
+			cb:Enable()
+			if cb.text and cb.text.SetTextColor then cb.text:SetTextColor(1, 0.82, 0) end
+		end
+		local function _disableCheck(cb)
+			cb:Disable()
+			if cb.text and cb.text.SetTextColor then cb.text:SetTextColor(0.6, 0.6, 0.6) end
+		end
+
+		if mode == "oncd" then
+			condFrame.cond_ability_text_time:Show()
+			_enableCheck(condFrame.cond_ability_text_time)
+			condFrame.cond_ability_text_time:SetChecked((c.ability and c.ability.textTimeRemaining) or false)
+
+		elseif mode == "usable" or mode == "notcd" then
+			condFrame.cond_ability_text_time:Show()
+			if slidEnabled then
+				_enableCheck(condFrame.cond_ability_text_time)
+				condFrame.cond_ability_text_time:SetChecked((c.ability and c.ability.textTimeRemaining) or false)
+			else
+				if c.ability and c.ability.textTimeRemaining then
+					c.ability.textTimeRemaining = false
+				end
+				condFrame.cond_ability_text_time:SetChecked(false)
+				_disableCheck(condFrame.cond_ability_text_time)
+			end
+		else
+			condFrame.cond_ability_text_time:Hide()
+		end
+
+		-- Time remaining behaves as before (gated by slider when mode is usable/notcd; shown on 'oncd')
+		if mode == "oncd" then
+			condFrame.cond_ability_text_time:Show()
+			_enableCheck(condFrame.cond_ability_text_time)
+			condFrame.cond_ability_text_time:SetChecked((c.ability and c.ability.textTimeRemaining) or false)
+
+		elseif mode == "usable" or mode == "notcd" then
+			condFrame.cond_ability_text_time:Show()
+			if slidEnabled then
+				_enableCheck(condFrame.cond_ability_text_time)
+				condFrame.cond_ability_text_time:SetChecked((c.ability and c.ability.textTimeRemaining) or false)
+			else
+				if c.ability and c.ability.textTimeRemaining then
+					c.ability.textTimeRemaining = false
+				end
+				condFrame.cond_ability_text_time:SetChecked(false)
+				_disableCheck(condFrame.cond_ability_text_time)
+			end
+		else
+			condFrame.cond_ability_text_time:Hide()
+		end
+
+
         -- initialize and show/hide Form dropdown based on player class availability
         local choices = (function()
             local _, cls = UnitClass("player")
             cls = cls and string.upper(cls) or ""
-            if cls == "WARRIOR" or cls == "ROGUE" or cls == "DRUID" then return true else return false end
+            return (cls == "WARRIOR" or cls == "ROGUE" or cls == "DRUID" or cls == "PRIEST" or cls == "PALADIN")
         end)()
 
 		-- hide the aura dropdown if it exists
@@ -1361,8 +1972,13 @@ local function UpdateConditionsUI(data)
 			condFrame.cond_ability_formDD:Show()
 			ClearDropdown(condFrame.cond_ability_formDD)
 			InitFormDropdown(condFrame.cond_ability_formDD, data, "ability")
-			UIDropDownMenu_SetSelectedValue(condFrame.cond_ability_formDD, (c.ability and c.ability.form) or "All")
-			UIDropDownMenu_SetText((c.ability and c.ability.form) or "All", condFrame.cond_ability_formDD)
+			local v = c.ability and c.ability.form
+			if v and v ~= "All" and v ~= "" then
+				UIDropDownMenu_SetSelectedValue(condFrame.cond_ability_formDD, v)
+				UIDropDownMenu_SetText(v, condFrame.cond_ability_formDD)
+			else
+				UIDropDownMenu_SetText("Select form", condFrame.cond_ability_formDD)
+			end
 		elseif condFrame.cond_ability_formDD then
 			condFrame.cond_ability_formDD:Hide()
 			ClearDropdown(condFrame.cond_ability_formDD)
@@ -1387,9 +2003,86 @@ local function UpdateConditionsUI(data)
         condFrame.cond_aura_stacks_val:Hide()
         condFrame.cond_aura_stacks_val_enter:Hide()
 		condFrame.cond_aura_tip:Hide()
+		if condFrame.cond_aura_text_time then condFrame.cond_aura_text_time:Hide() end
+		if condFrame.cond_aura_text_stack then condFrame.cond_aura_text_stack:Hide() end
+
+		if condFrame.cond_aura_power then condFrame.cond_aura_power:Hide() end
+		if condFrame.cond_aura_power_comp then condFrame.cond_aura_power_comp:Hide() end
+		if condFrame.cond_aura_power_val then condFrame.cond_aura_power_val:Hide() end
+		if condFrame.cond_aura_power_val_enter then condFrame.cond_aura_power_val_enter:Hide() end
+
+		if condFrame.cond_aura_hp_my then condFrame.cond_aura_hp_my:Hide() end
+		if condFrame.cond_aura_hp_tgt then condFrame.cond_aura_hp_tgt:Hide() end
+		if condFrame.cond_aura_hp_comp then condFrame.cond_aura_hp_comp:Hide() end
+		if condFrame.cond_aura_hp_val then condFrame.cond_aura_hp_val:Hide() end
+		if condFrame.cond_aura_hp_val_enter then condFrame.cond_aura_hp_val_enter:Hide() end
+
+		if condFrame.cond_aura_cp_cb then condFrame.cond_aura_cp_cb:Hide() end
+		if condFrame.cond_aura_cp_comp then condFrame.cond_aura_cp_comp:Hide() end
+		if condFrame.cond_aura_cp_val then condFrame.cond_aura_cp_val:Hide() end
+		if condFrame.cond_aura_cp_val_enter then condFrame.cond_aura_cp_val_enter:Hide() end
 
     -- AURA (Buff/Debuff)
     else
+		-- helper: move the CLASS-SPECIFIC (combo points) row to a target row slot
+		local function _Aura_MoveCPRow(toRow)
+			local p = (condFrame and condFrame._condArea) or condFrame
+			local y = (condFrame and condFrame._rowY and condFrame._rowY[toRow]) or -380  -- default row10_y
+			-- main checkbox
+			condFrame.cond_aura_cp_cb:ClearAllPoints()
+			condFrame.cond_aura_cp_cb:SetPoint("TOPLEFT", p, "TOPLEFT", 0, y)
+			-- comparator
+			condFrame.cond_aura_cp_comp:ClearAllPoints()
+			condFrame.cond_aura_cp_comp:SetPoint("TOPLEFT", p, "TOPLEFT", 85, y + 3)
+			-- value box (+ its "(#)" label stays relative to the box)
+			condFrame.cond_aura_cp_val:ClearAllPoints()
+			condFrame.cond_aura_cp_val:SetPoint("TOPLEFT", p, "TOPLEFT", 180, y - 2)
+			condFrame.cond_aura_cp_val_enter:ClearAllPoints()
+			condFrame.cond_aura_cp_val_enter:SetPoint("LEFT", condFrame.cond_aura_cp_val, "RIGHT", 4, 0)
+		end
+		
+		-- (Place these small helpers near the top of the AURA branch in UpdateConditionsUI)
+		local function _enableCheck(cb)
+			cb:Enable()
+			if cb.text and cb.text.SetTextColor then cb.text:SetTextColor(1, 0.82, 0) end
+		end
+		local function _disableCheck(cb)
+			cb:Disable()
+			if cb.text and cb.text.SetTextColor then cb.text:SetTextColor(0.6, 0.6, 0.6) end
+		end
+		local function _enableDD(dd)
+			if not dd then return end
+			local btn = _G[dd:GetName().."Button"]
+			local txt = _G[dd:GetName().."Text"]
+			if btn and btn.Enable then btn:Enable() end
+			if txt and txt.SetTextColor then txt:SetTextColor(1, 0.82, 0) end
+		end
+		local function _disableDD(dd)
+			if not dd then return end
+			local btn = _G[dd:GetName().."Button"]
+			local txt = _G[dd:GetName().."Text"]
+			if btn and btn.Disable then btn:Disable() end
+			if txt and txt.SetTextColor then txt:SetTextColor(0.6, 0.6, 0.6) end
+		end
+		local function _hideRemInputs()
+			condFrame.cond_aura_remaining_comp:Hide()
+			condFrame.cond_aura_remaining_val:Hide()
+			condFrame.cond_aura_remaining_val_enter:Hide()
+		end
+
+		-- helper: retitle & show/hide a separator slot (we only touch 'aura' seps)
+		local function _Aura_SetSep(slot, title, visible)
+			local list = condFrame._seps and condFrame._seps.aura
+			local sep = list and list[slot]
+			if not sep then return end
+			if title and sep._label then
+				sep._label:SetText("|cffffffff" .. title .. "|r")
+			end
+			sep._visible = visible and true or false
+			if sep._visible then sep:Show() else sep:Hide() end
+		end
+
+		ShowSeparatorsForType("aura")
         condFrame.cond_aura_found:Show()
         condFrame.cond_aura_missing:Show()
 		if condFrame.cond_aura_tip then condFrame.cond_aura_tip:Show() end
@@ -1447,11 +2140,102 @@ local function UpdateConditionsUI(data)
         condFrame.cond_aura_glow:SetChecked((c.aura and c.aura.glow) or false)
         condFrame.cond_aura_greyscale:SetChecked((c.aura and c.aura.greyscale) or false)
 
+		        -- Row 7: Combo points (class-gated)
+        if _IsRogueOrDruid() then
+            condFrame.cond_aura_cp_cb:Show()
+            local cpOn = (c.aura and c.aura.cpEnabled) and true or false
+            condFrame.cond_aura_cp_cb:SetChecked(cpOn)
+            if cpOn then
+                condFrame.cond_aura_cp_comp:Show()
+                condFrame.cond_aura_cp_val:Show()
+                condFrame.cond_aura_cp_val_enter:Show()
+                local comp = (c.aura and c.aura.cpComp) or ""
+                UIDropDownMenu_SetSelectedValue(condFrame.cond_aura_cp_comp, comp)
+                UIDropDownMenu_SetText(comp, condFrame.cond_aura_cp_comp)
+                condFrame.cond_aura_cp_val:SetText(tostring((c.aura and c.aura.cpVal) or 0))
+            else
+                condFrame.cond_aura_cp_comp:Hide()
+                condFrame.cond_aura_cp_val:Hide()
+                condFrame.cond_aura_cp_val_enter:Hide()
+            end
+        else
+            condFrame.cond_aura_cp_cb:Hide()
+            condFrame.cond_aura_cp_comp:Hide()
+            condFrame.cond_aura_cp_val:Hide()
+            condFrame.cond_aura_cp_val_enter:Hide()
+        end
+
+        -- Row 8: HP selector (mutually exclusive)
+        condFrame.cond_aura_hp_my:Show()
+        condFrame.cond_aura_hp_tgt:Show()
+        local hpModeA = c.aura and c.aura.hpMode or nil
+        condFrame.cond_aura_hp_my:SetChecked(hpModeA == "my")
+        condFrame.cond_aura_hp_tgt:SetChecked(hpModeA == "target")
+        if hpModeA == "my" or hpModeA == "target" then
+            condFrame.cond_aura_hp_comp:Show()
+            condFrame.cond_aura_hp_val:Show()
+            condFrame.cond_aura_hp_val_enter:Show()
+            local comp = (c.aura and c.aura.hpComp) or ""
+            UIDropDownMenu_SetSelectedValue(condFrame.cond_aura_hp_comp, comp)
+            UIDropDownMenu_SetText(comp, condFrame.cond_aura_hp_comp)
+            condFrame.cond_aura_hp_val:SetText(tostring((c.aura and c.aura.hpVal) or 0))
+        else
+            condFrame.cond_aura_hp_comp:Hide()
+            condFrame.cond_aura_hp_val:Hide()
+            condFrame.cond_aura_hp_val_enter:Hide()
+        end
+
+		-- Row 10: Text flags (shown only when aura is FOUND)
+		local amode = (c.aura and c.aura.mode) or nil
+		local onSelf = (c.aura and c.aura.targetSelf) and true or false
+
+		if amode == "found" then
+			-- Show 'Stacks' text always (stacks can be meaningful off-self; your existing gating for stacks feature remains)
+			condFrame.cond_aura_text_stack:Show()
+			condFrame.cond_aura_text_stack:SetChecked((c.aura and c.aura.textStackCounter) or false)
+
+			-- Time remaining text is ONLY meaningful on player in 1.12.
+			condFrame.cond_aura_text_time:Show()
+			if onSelf then
+				_enableCheck(condFrame.cond_aura_text_time)
+				condFrame.cond_aura_text_time:SetChecked((c.aura and c.aura.textTimeRemaining) or false)
+			else
+				-- Grey out + auto-uncheck + clear DB
+				_disableCheck(condFrame.cond_aura_text_time)
+				condFrame.cond_aura_text_time:SetChecked(false)
+				if c.aura and c.aura.textTimeRemaining then
+					c.aura.textTimeRemaining = false
+				end
+			end
+		else
+			condFrame.cond_aura_text_time:Hide()
+			condFrame.cond_aura_text_stack:Hide()
+		end
+
+
+        -- Row 11: Aura Power (like ability)
+        condFrame.cond_aura_power:Show()
+        local pOn = (c.aura and c.aura.powerEnabled) and true or false
+        condFrame.cond_aura_power:SetChecked(pOn)
+        if pOn then
+            condFrame.cond_aura_power_comp:Show()
+            condFrame.cond_aura_power_val:Show()
+            condFrame.cond_aura_power_val_enter:Show()
+            local comp = (c.aura and c.aura.powerComp) or ""
+            UIDropDownMenu_SetSelectedValue(condFrame.cond_aura_power_comp, comp)
+            UIDropDownMenu_SetText(comp, condFrame.cond_aura_power_comp)
+            condFrame.cond_aura_power_val:SetText(tostring((c.aura and c.aura.powerVal) or 0))
+        else
+            condFrame.cond_aura_power_comp:Hide()
+            condFrame.cond_aura_power_val:Hide()
+            condFrame.cond_aura_power_val_enter:Hide()
+        end
+
         -- initialize and show/hide Form dropdown based on player class availability
         local choices = (function()
             local _, cls = UnitClass("player")
             cls = cls and string.upper(cls) or ""
-            if cls == "WARRIOR" or cls == "ROGUE" or cls == "DRUID" then return true else return false end
+            return (cls == "WARRIOR" or cls == "ROGUE" or cls == "DRUID" or cls == "PRIEST" or cls == "PALADIN")
         end)()
 		
 		if condFrame.cond_ability_formDD then
@@ -1462,38 +2246,58 @@ local function UpdateConditionsUI(data)
 			condFrame.cond_aura_formDD:Show()
 			ClearDropdown(condFrame.cond_aura_formDD)
 			InitFormDropdown(condFrame.cond_aura_formDD, data, "aura")
-			UIDropDownMenu_SetSelectedValue(condFrame.cond_aura_formDD, (c.aura and c.aura.form) or "All")
-			UIDropDownMenu_SetText((c.aura and c.aura.form) or "All", condFrame.cond_aura_formDD)
+			local v = c.aura and c.aura.form
+			if v and v ~= "All" and v ~= "" then
+				UIDropDownMenu_SetSelectedValue(condFrame.cond_aura_formDD, v)
+				UIDropDownMenu_SetText(v, condFrame.cond_aura_formDD)
+			else
+				UIDropDownMenu_SetText("Select form", condFrame.cond_aura_formDD)
+			end
 		elseif condFrame.cond_aura_formDD then
 			condFrame.cond_aura_formDD:Hide()
 			ClearDropdown(condFrame.cond_aura_formDD)
 		end
 
-		-- Remaining (only valid when aura found AND On player (self))
+		-- Remaining (Row 7): show the checkbox when aura is FOUND; enable only if target is Self
+		local amode = (c.aura and c.aura.mode) or nil
+		local onSelf = (c.aura and c.aura.targetSelf) and true or false
 		local aRemEnabled = (c.aura and c.aura.remainingEnabled) and true or false
 		condFrame.cond_aura_remaining_cb:SetChecked(aRemEnabled)
 
-		-- Only show the checkbox itself when mode is "found" AND Self is selected
-		if amode == "found" and ts == true then
+		if amode == "found" then
+			-- Always show the checkbox when aura is FOUND
 			condFrame.cond_aura_remaining_cb:Show()
-			if aRemEnabled then
-				condFrame.cond_aura_remaining_comp:Show()
-				condFrame.cond_aura_remaining_val:Show()
-				condFrame.cond_aura_remaining_val_enter:Show()
-				local comp = (c.aura and c.aura.remainingComp) or ""
-				UIDropDownMenu_SetSelectedValue(condFrame.cond_aura_remaining_comp, comp)
-				UIDropDownMenu_SetText(comp, condFrame.cond_aura_remaining_comp)
-				condFrame.cond_aura_remaining_val:SetText(tostring((c.aura and c.aura.remainingVal) or 0))
+
+			if onSelf then
+				-- Valid context: enable the checkbox; show inputs only if checked
+				_enableCheck(condFrame.cond_aura_remaining_cb)
+				if aRemEnabled then
+					condFrame.cond_aura_remaining_comp:Show()
+					condFrame.cond_aura_remaining_val:Show()
+					condFrame.cond_aura_remaining_val_enter:Show()
+					_enableDD(condFrame.cond_aura_remaining_comp)
+
+					local comp = (c.aura and c.aura.remainingComp) or ""
+					UIDropDownMenu_SetSelectedValue(condFrame.cond_aura_remaining_comp, comp)
+					UIDropDownMenu_SetText(comp, condFrame.cond_aura_remaining_comp)
+					condFrame.cond_aura_remaining_val:SetText(tostring((c.aura and c.aura.remainingVal) or 0))
+				else
+					_hideRemInputs()
+				end
 			else
-				condFrame.cond_aura_remaining_comp:Hide()
-				condFrame.cond_aura_remaining_val:Hide()
-				condFrame.cond_aura_remaining_val_enter:Hide()
+				-- Not on self: keep it visible but disabled + unchecked; hide inputs
+				_disableCheck(condFrame.cond_aura_remaining_cb)
+
+				if aRemEnabled and c.aura then
+					c.aura.remainingEnabled = false    -- auto-uncheck in DB
+				end
+				condFrame.cond_aura_remaining_cb:SetChecked(false)
+				_hideRemInputs()
 			end
 		else
+			-- Aura not found: Row 7 is repurposed to CLASS-SPECIFIC elsewhere; hide remaining widgets here
 			condFrame.cond_aura_remaining_cb:Hide()
-			condFrame.cond_aura_remaining_comp:Hide()
-			condFrame.cond_aura_remaining_val:Hide()
-			condFrame.cond_aura_remaining_val_enter:Hide()
+			_hideRemInputs()
 		end
 
         -- Stacks (only valid when aura found)
@@ -1522,6 +2326,29 @@ local function UpdateConditionsUI(data)
 		end
 		-- Do NOT touch cond_aura_remaining_cb here; its visibility was decided above.
 
+		-- === Row 7 section & CP relocation depending on Aura presence ===
+		-- If "Aura found": show TIME REMAINING & STACKS at row 7; CP stays at row 10
+		-- If "Aura not found": hide that section and pull CLASS-SPECIFIC up to row 7
+		if amode == "found" then
+			-- restore row 7 section
+			_Aura_SetSep(7, "TIME REMAINING & STACKS", true)
+			-- ensure CLASS-SPECIFIC separator lives at row 10 (its normal place)
+			_Aura_SetSep(10, "CLASS-SPECIFIC", true)
+			-- move CP back to row 10
+			_Aura_MoveCPRow(10)
+		else
+			-- hide all widgets of the row 7 section (already hidden above), and repurpose sep7
+			-- by putting CLASS-SPECIFIC at row 7 instead
+			_Aura_SetSep(7, "CLASS-SPECIFIC", true)
+			-- and hide the original row 10 separator so we don't duplicate the header
+			_Aura_SetSep(10, "CLASS-SPECIFIC", false)
+			-- pull CP row from row 10 up to row 7
+			_Aura_MoveCPRow(7)
+		end
+
+		-- re-run the per-type separator show to apply our visibility/title changes
+		ShowSeparatorsForType("aura")
+
 
         -- Hide all ability controls
         condFrame.cond_ability_usable:Hide()
@@ -1544,6 +2371,21 @@ local function UpdateConditionsUI(data)
         condFrame.cond_ability_remaining_comp:Hide()
         condFrame.cond_ability_remaining_val:Hide()
         condFrame.cond_ability_remaining_val_enter:Hide()
+		if condFrame.cond_ability_text_time then condFrame.cond_ability_text_time:Hide() end
+
+		if condFrame.cond_ability_hp_my then condFrame.cond_ability_hp_my:Hide() end
+		if condFrame.cond_ability_hp_tgt then condFrame.cond_ability_hp_tgt:Hide() end
+		if condFrame.cond_ability_hp_comp then condFrame.cond_ability_hp_comp:Hide() end
+		if condFrame.cond_ability_hp_val then condFrame.cond_ability_hp_val:Hide() end
+		if condFrame.cond_ability_hp_val_enter then condFrame.cond_ability_hp_val_enter:Hide() end
+
+		if condFrame.cond_ability_cp_cb then condFrame.cond_ability_cp_cb:Hide() end
+		if condFrame.cond_ability_cp_comp then condFrame.cond_ability_cp_comp:Hide() end
+		if condFrame.cond_ability_cp_val then condFrame.cond_ability_cp_val:Hide() end
+		if condFrame.cond_ability_cp_val_enter then condFrame.cond_ability_cp_val_enter:Hide() end
+
+		if condFrame.cond_ability_slider_glow then condFrame.cond_ability_slider_glow:Hide() end
+		if condFrame.cond_ability_slider_grey then condFrame.cond_ability_slider_grey:Hide() end
     end
 end
 
@@ -1556,8 +2398,17 @@ function UpdateCondFrameForKey(key)
     if not condFrame or not key then return end
     currentKey = key
 	_G["DoiteEdit_CurrentKey"] = key
-    local data = EnsureDBEntry(key)
-
+        local data = EnsureDBEntry(key)
+    -- hard-separate condition tables every time the editor opens this entry
+    if data and data.conditions then
+        if data.type == "Ability" then
+            data.conditions.ability = data.conditions.ability or {}
+            data.conditions.aura = nil
+        else
+            data.conditions.aura = data.conditions.aura or {}
+            data.conditions.ability = nil
+        end
+    end
 
     -- Header: colored by type
     local typeColor = "|cffffffff"
@@ -1832,6 +2683,51 @@ function DoiteConditions_Show(key)
         sep2:SetPoint("TOPRIGHT", condFrame, "TOPRIGHT", -16, -140)
         sep2:SetTexture(1,1,1)
         if sep2.SetVertexColor then sep2:SetVertexColor(1,1,1,0.25) end
+
+		-- === Scrollable container for CONDITIONS & RULES (no size/pos changes elsewhere) ===
+		-- Create once and reuse; anchors live between the "CONDITIONS & RULES" line and before "POSITION & SIZE"
+		if not condFrame.condListContainer then
+			local cW = condFrame:GetWidth() - 43  -- leave the same left/right padding as lines
+			local cH = 210                         -- fits the current space; contents will scroll as it grows
+
+			local listContainer = CreateFrame("Frame", nil, condFrame)
+			listContainer:SetWidth(cW)
+			listContainer:SetHeight(cH)
+			listContainer:SetPoint("TOPLEFT", condFrame, "TOPLEFT", 14, -143)  -- just below sep2 line
+			listContainer:SetBackdrop({
+				bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+				edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+				tile = true, tileSize = 16, edgeSize = 16
+			})
+			listContainer:SetBackdropColor(0,0,0,0.7)
+			condFrame.condListContainer = listContainer
+
+			local scrollFrame = CreateFrame("ScrollFrame", "DoiteConditionsScroll", listContainer, "UIPanelScrollFrameTemplate")
+			scrollFrame:SetWidth(cW - 20)
+			scrollFrame:SetHeight(cH - 9)
+			scrollFrame:SetPoint("TOPLEFT", listContainer, "TOPLEFT", 12, -5)
+			condFrame.condScrollFrame = scrollFrame
+
+			local listContent = CreateFrame("Frame", "DoiteConditionsListContent", scrollFrame)
+			listContent:SetWidth(cW - 20)
+			listContent:SetHeight(cH - 10)  -- will be increased by controls; scrollFrame will handle overflow
+			scrollFrame:SetScrollChild(listContent)
+			condFrame._condArea = listContent  -- parent for all condition controls
+			
+			listContent:SetHeight(900)  -- big enough to cover all rows; tweak if you add more
+
+			-- 2) Make absolutely sure the visual stacking (levels) keeps the backdrop under the controls.
+			--    (WoW 1.12 supports FrameLevel; parent/child constraints still apply, but this bumps things correctly.)
+			local baseLevel = condFrame:GetFrameLevel() or 1
+			listContainer:SetFrameLevel(baseLevel + 0)   -- backdrop holder
+			scrollFrame:SetFrameLevel(baseLevel + 1)     -- the scroller itself
+			listContent:SetFrameLevel(baseLevel + 2)     -- the actual area where controls live
+
+			-- Optional (helps click/scroll behavior feel solid)
+			if scrollFrame.EnableMouseWheel then
+				scrollFrame:EnableMouseWheel(true)
+			end
+		end
 
         -- Create the Conditions UI section (self-contained)
         CreateConditionsUI()
