@@ -2274,6 +2274,49 @@ addBtn:SetScript("OnClick", function()
     return
   end
 
+  ----------------------------------------------------------------
+  -- Buff/Debuff duplicate rule:
+  -- Only allow ONE entry per (name,type) while NONE of the existing
+  -- siblings have a texture yet (iconTexture or cache entry).
+  ----------------------------------------------------------------
+  if t == "Buff" or t == "Debuff" then
+      local cache   = DA_Cache()
+      local baseKey = BaseKeyFor(name, t)
+
+      local hasSibling         = false
+      local siblingHasTexture  = false
+
+      if DoiteAurasDB and DoiteAurasDB.spells then
+          local sk, sd
+          for sk, sd in pairs(DoiteAurasDB.spells) do
+              if sd and BaseKeyFor(sd) == baseKey then
+                  hasSibling = true
+
+                  local nm  = sd.displayName or sd.name
+                  local tex = sd.iconTexture
+                  if not tex and nm then
+                      tex = cache[nm]
+                  end
+
+                  if tex then
+                      siblingHasTexture = true
+                      break
+                  end
+              end
+          end
+      end
+
+      -- If there is already at least one Buff/Debuff with this name+type and NONE of them have a texture yet, block adding another.
+      if hasSibling and not siblingHasTexture then
+          local cf = (DEFAULT_CHAT_FRAME or ChatFrame1)
+          if cf then
+              cf:AddMessage("|cff6FA8DCDoiteAuras:|r To add another duplicate aura of the same type (buff/debuff) with the name |cffffff00" .. name .. "|r, you must first have seen/applied it at least once.")
+          end
+          return
+      end
+  end
+  ----------------------------------------------------------------
+
   -- generate unique key; baseKey groups duplicates by name+type
   local key, baseKey, instanceIdx = GenerateUniqueKey(name, t)
 

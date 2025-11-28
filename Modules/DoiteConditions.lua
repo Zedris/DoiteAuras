@@ -1690,22 +1690,36 @@ end
 
 -- Ensure a Buff/Debuff icon has a texture (player/target, then fallback via spellbook)
 local function _EnsureAuraTexture(frame, data)
-    if not frame or not frame.icon or not data then return end
+    -- Hard guards: must have a real frame, real icon, real data
+    if not frame or type(frame) ~= "table" then return end
+    local icon = frame.icon
+    if not icon or type(icon) ~= "table" or not icon.GetTexture or not icon.SetTexture then
+        return
+    end
+    if not data or type(data) ~= "table" then return end
 
-    local curTex = frame.icon:GetTexture()
-    local isPlaceholder = (curTex == nil) or (type(curTex) == "string" and str_find(curTex, "INV_Misc_QuestionMark"))
-
-    local c = data.conditions and data.conditions.aura
+    local c    = data.conditions and data.conditions.aura
     local name = data.displayName or data.name
-    if not c or not name then return end
+    if not c or not name or name == "" then return end
 
-    local cached = IconCache[name]
-    if cached and (not frame.icon:GetTexture() or frame.icon:GetTexture() ~= cached) then
-        frame.icon:SetTexture(cached)
+    -- Current texture and cache
+    local curTex  = icon:GetTexture()
+    local cached  = IconCache and IconCache[name] or nil
+    local isPlaceholder = (curTex == nil)
+                        or (type(curTex) == "string" and str_find(curTex, "INV_Misc_QuestionMark"))
+
+    -- If already have a cached real texture for this aura name, just use it.
+    if cached and (not curTex or curTex ~= cached) then
+        icon:SetTexture(cached)
         return
     end
 
-    -- Resolve unit(s) to scan
+    -- If the icon already has a non-placeholder texture and nothing cached,
+    if (not isPlaceholder) and curTex then
+        return
+    end
+
+    -- Resolve unit(s) to scan, same semantics as before
     local tgt = c.target or (c.targetSelf and "self") or (c.targetTarget and "target") or "self"
     local checkSelf, checkTarget = false, false
     if tgt == "self" then
@@ -1713,7 +1727,8 @@ local function _EnsureAuraTexture(frame, data)
     elseif tgt == "target" then
         checkTarget = true
     elseif tgt == "both" then
-        checkSelf = true; checkTarget = true
+        checkSelf  = true
+        checkTarget = true
     else
         checkSelf = true
     end
@@ -1725,10 +1740,13 @@ local function _EnsureAuraTexture(frame, data)
             local n = _GetAuraName(unit, i, false)
             if not n then break end
             if n == name then
-                local tex = UnitBuff(unit, i) -- returns texture or nil
+                local tex = UnitBuff(unit, i)
                 if tex and (isPlaceholder or curTex ~= tex) then
-                    frame.icon:SetTexture(tex)
-                    IconCache[name] = tex -- persist in DoiteAurasDB.cache
+                    icon:SetTexture(tex)
+                    IconCache[name] = tex
+                    if DoiteAurasDB and DoiteAurasDB.cache then
+                        DoiteAurasDB.cache[name] = tex
+                    end
                 end
                 return true
             end
@@ -1741,10 +1759,13 @@ local function _EnsureAuraTexture(frame, data)
             local n = _GetAuraName(unit, i, true)
             if not n then break end
             if n == name then
-                local tex = UnitDebuff(unit, i) -- returns texture or nil
+                local tex = UnitDebuff(unit, i)
                 if tex and (isPlaceholder or curTex ~= tex) then
-                    frame.icon:SetTexture(tex)
-                    IconCache[name] = tex -- persist in DoiteAurasDB.cache
+                    icon:SetTexture(tex)
+                    IconCache[name] = tex
+                    if DoiteAurasDB and DoiteAurasDB.cache then
+                        DoiteAurasDB.cache[name] = tex
+                    end
                 end
                 return true
             end
@@ -1755,30 +1776,36 @@ local function _EnsureAuraTexture(frame, data)
     end
 
     local got = false
-    if checkSelf then got = tryUnit("player") end
-    if (not got) and checkTarget and UnitExists("target") then got = tryUnit("target") end
+    if checkSelf then
+        got = tryUnit("player")
+    end
+    if (not got) and checkTarget and UnitExists("target") then
+        got = tryUnit("target")
+    end
 
-	-- Fallback to spellbook texture
-	if (not got) then
-		local i = 1
-		while i <= 200 do
-			local s = GetSpellName(i, BOOKTYPE_SPELL)
-			if not s then break end
-			if s == name then
-				local tex = GetSpellTexture(i, BOOKTYPE_SPELL)
-				if tex and (isPlaceholder or curTex ~= tex) then
-					frame.icon:SetTexture(tex)
-					IconCache[name] = tex
-				end
-				break
-			end
-			i = i + 1
-		end
-		-- Nudge the next regular update, but don't re-enter recursively
-		dirty_aura = true
-		return
-	end
-
+    -- Fallback to spellbook texture
+    if not got then
+        local i = 1
+        while i <= 200 do
+            local s = GetSpellName(i, BOOKTYPE_SPELL)
+            if not s then break end
+            if s == name then
+                local tex = GetSpellTexture(i, BOOKTYPE_SPELL)
+                if tex and (isPlaceholder or curTex ~= tex) then
+                    icon:SetTexture(tex)
+                    IconCache[name] = tex
+                    if DoiteAurasDB and DoiteAurasDB.cache then
+                        DoiteAurasDB.cache[name] = tex
+                    end
+                end
+                break
+            end
+            i = i + 1
+        end
+        -- Nudge the next regular update, but don't re-enter recursively
+        dirty_aura = true
+        return
+    end
 end
 
 -- Ensure a synthetic Item slot icon (equipped trinkets / weapons) has a real texture
@@ -3546,40 +3573,39 @@ _acc        = 0
 _scanAccum  = 0
 _textAccum  = 0
 
-_tick:SetScript("OnUpdate", function()
-    local dt = arg1
+-- Lift the body into a real function
+local function DoiteConditions_OnUpdate(dt)
     _acc       = _acc + dt
     _scanAccum = _scanAccum + dt
     _textAccum = _textAccum + dt
 
     local AURA_SCAN_INTERVAL = 0.30
-	-- Refresh player & target auras every 0.2s
-	if _scanAccum >= AURA_SCAN_INTERVAL then
-		_scanAccum = 0
+    -- Refresh player & target auras every 0.3s
+    if _scanAccum >= AURA_SCAN_INTERVAL then
+        _scanAccum = 0
 
-		-- Always keep player snapshot fresh
-		DoiteConditions_ScanUnitAuras("player")
-		dirty_aura = true
+        -- Always keep player snapshot fresh
+        DoiteConditions_ScanUnitAuras("player")
+        dirty_aura = true
 
-		-- Only burn tooltip scans on target if *any* icon/config ever cares.
-		if _hasAnyTargetAuraUsage and _G.UnitExists and _G.UnitExists("target") then
-			DoiteConditions_ScanUnitAuras("target")
-			dirty_aura = true
-		end
-	end
+        -- Only burn tooltip scans on target if *any* icon/config ever cares.
+        if _hasAnyTargetAuraUsage and _G.UnitExists and _G.UnitExists("target") then
+            DoiteConditions_ScanUnitAuras("target")
+            dirty_aura = true
+        end
+    end
 
     -- Keep warrior Overpower/Revenge procs in sync even if no other events fire
     DoiteConditions_WarriorProcTick()
 
     -- Smooth remaining-time updates (abilities) every 0.5s.
-    -- Only schedule a time-only pass if at least one icon actually uses time logic.
     if _textAccum >= 0.5 then
         _textAccum = 0
         if _hasAnyAbilityTimeLogic then
             dirty_ability_time = true   -- lightweight pass for CD text / remainingEnabled
         end
     end
-	
+
     -- Render faster while sliding; else ~30fps
     local thresh = (next(DoiteConditions_SlideMgr.active) ~= nil) and 0.03 or 0.033
     if _acc < thresh then return end
@@ -3601,6 +3627,16 @@ _tick:SetScript("OnUpdate", function()
         dirty_ability_time = false
         -- While sliding, ability icons updating each frame
         dirty_ability = next(DoiteConditions_SlideMgr.active) and true or false
+    end
+end
+
+_tick:SetScript("OnUpdate", function()
+    local dt = arg1 or 0
+    local ok, err = pcall(DoiteConditions_OnUpdate, dt)
+    if not ok and DEFAULT_CHAT_FRAME then
+        DEFAULT_CHAT_FRAME:AddMessage(
+            "|cffff0000[DoiteAuras] OnUpdate error:|r " .. tostring(err)
+        )
     end
 end)
 
