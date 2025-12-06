@@ -325,6 +325,10 @@ local function _ScanUnitAuras(unit)
 	local buffs,   debuffs   = snap.buffs,   snap.debuffs
 	local buffIds, debuffIds = snap.buffIds, snap.debuffIds
 	if not buffs or not debuffs then return end
+	
+	-- Track how many slots are actually occupied
+    local buffCount   = 0
+    local debuffCount = 0
 
 	-- Clear previous snapshot
 	for k in pairs(buffs)     do buffs[k]     = nil end
@@ -348,6 +352,8 @@ local function _ScanUnitAuras(unit)
 		if not tex then
 			break
 		end
+
+        buffCount = buffCount + 1
 
 		local name
 		if auraId and SpellInfo then
@@ -411,6 +417,8 @@ local function _ScanUnitAuras(unit)
 			break
 		end
 
+        debuffCount = debuffCount + 1
+
 		local name
 		if auraId and SpellInfo then
 			name = SpellInfo(auraId)
@@ -461,6 +469,10 @@ local function _ScanUnitAuras(unit)
 
 		i = i + 1
 	end
+	
+	-- Remember how many buff/debuff slots were actually used
+    snap.buffCount   = buffCount
+    snap.debuffCount = debuffCount
 
     if dirty_aura and DoiteAurasDB and DoiteAurasDB.cache then
         DoiteAurasDB.cache = IconCache
@@ -1419,6 +1431,32 @@ local function _CursiveRemainingPass(spellName, unit, comp, threshold)
     return _RemainingPasses(rem, comp, threshold)
 end
 
+-- For debuff checks only: if all debuff slots are full and the name exists in buffs, treat it as a debuff hit
+local function _UnitHasOverflowDebuff(unit, auraName)
+    if not unit or not auraName then return false end
+
+    local snap = auraSnapshot[unit]
+    if not snap then return false end
+
+    local debuffs = snap.debuffs
+    if debuffs and debuffs[auraName] == true then
+        return true
+    end
+
+    local count = snap.debuffCount or 0
+    if count < 16 then
+        -- Debuff bar not "full", so don't risk treating a real buff as debuff.
+        return false
+    end
+
+    local buffs = snap.buffs
+    if buffs and buffs[auraName] == true then
+        return true
+    end
+
+    return false
+end
+
 local function _AuraConditions_UnitHasAura(unit, auraName, wantDebuff)
     if not unit or not auraName then return false end
     if unit == "target" and (not UnitExists("target")) then
@@ -1429,8 +1467,8 @@ local function _AuraConditions_UnitHasAura(unit, auraName, wantDebuff)
     if not snap then return false end
 
     if wantDebuff then
-        local d = snap.debuffs
-        return d and d[auraName] == true
+        -- Debuff checks: first real debuffs, then overflow in buffs.
+        return _UnitHasOverflowDebuff(unit, auraName)
     else
         local b = snap.buffs
         return b and b[auraName] == true
@@ -1450,11 +1488,21 @@ local function _AuraConditions_CheckEntry(entry)
     if entry.buffType == "ABILITY" then
         if entry.mode == "notcd" or entry.mode == "oncd" then
             local rem, dur = _AbilityCooldownByName(name)
-            if not rem then
+            if rem == nil then
                 -- Ability not in spellbook => cannot satisfy this condition
                 return false
             end
-            local onCd = (rem > 0)
+
+            -- Treat pure global cooldown (very short duration) as "not really on cooldown" to avoid flickering auraConditions when other spells trigger the GCD.
+            local onCd = false
+            if rem and rem > 0 then
+                if dur and dur > 1.5 then
+                    onCd = true
+                else
+                    onCd = false
+                end
+            end
+
             if entry.mode == "notcd" then
                 return (not onCd)
             else -- "oncd"
@@ -1500,7 +1548,6 @@ local function _EvaluateAuraConditionsList(list)
         return true
     end
 
-    -- Prefer the new DoiteLogic module if it exists
     local DL = _G["DoiteLogic"]
     if DL and DL.EvaluateAuraList then
         return DL.EvaluateAuraList(list, _AuraConditions_CheckEntry)
@@ -1532,10 +1579,13 @@ local function _StacksPasses(cnt, comp, target)
     return true
 end
 
--- Get stack count for a named aura on a unit (works for player/target)
+-- Get stack count for a named aura on a unit (works for player/target) if all debuff slots are full and the debuff has overflown into the buff list, also read stacks from UnitBuff.
 local function _GetAuraStacksOnUnit(unit, auraName, wantDebuff)
     if not unit or not auraName then return nil end
 
+    ----------------------------------------------------------------
+    -- 1) Primary scan: normal BUFF / DEBUFF list (unchanged)
+    ----------------------------------------------------------------
     local i = 1
     while i <= 40 do
         local tex, applications, auraId
@@ -1561,6 +1611,53 @@ local function _GetAuraStacksOnUnit(unit, auraName, wantDebuff)
 
         i = i + 1
     end
+
+
+    -- If debuff bar is "full" (>=16) and the aura name is present in the BUFF snapshot, treat it as an overflowed debuff and read stacks from UnitBuff.
+    if wantDebuff then
+        local snap = auraSnapshot[unit]
+        if snap then
+            local debCount = snap.debuffCount or 0
+            local buffs    = snap.buffs
+
+            if debCount >= 16 and buffs and buffs[auraName] then
+                -- First try a SpellInfo-based pass (mirrors main loop)
+                local j = 1
+                while j <= 40 do
+                    local tex2, applications2, auraId2 = UnitBuff(unit, j)
+                    if not tex2 then
+                        break
+                    end
+
+                    local name2
+                    if auraId2 and SpellInfo then
+                        name2 = SpellInfo(auraId2)
+                    end
+
+                    if name2 == auraName then
+                        return applications2 or 1
+                    end
+
+                    j = j + 1
+                end
+
+                -- Fallback: tooltip-based name resolution via _GetAuraName, then a second UnitBuff call to read stacks.
+                j = 1
+                while j <= 40 do
+                    local n = _GetAuraName(unit, j, false)
+                    if n == nil then
+                        break
+                    end
+                    if n ~= "" and n == auraName then
+                        local _, applications3 = UnitBuff(unit, j)
+                        return applications3 or 1
+                    end
+                    j = j + 1
+                end
+            end
+        end
+    end
+
     return nil
 end
 
@@ -1622,12 +1719,6 @@ local function _PlayerUsesComboPoints()
 end
 
 -- === Target Distance / AoE / Unit Type helpers ==========================
-
--- These can be overridden at runtime if you want different defaults.
-_G.DoiteConditions_SingleCloseThresholdYds = _G.DoiteConditions_SingleCloseThresholdYds or 8   -- "no other NPC close" for Single target
-_G.DoiteConditions_AoeRangeThresholdYds    = _G.DoiteConditions_AoeRangeThresholdYds  or 10  -- default for "AOE (Range)"
-_G.DoiteConditions_AoeMeleeThresholdYds    = _G.DoiteConditions_AoeMeleeThresholdYds  or 5   -- default for "AOE (Melee)"
-
 -- Mapping used by the editor labels ("1. Humanoid", "Multi: 1+2", etc.)
 local UNIT_TYPE_INDEX_MAP = {
     [1] = "Humanoid",
@@ -1861,7 +1952,7 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
     local canAttack = UnitCanAttack and UnitCanAttack("player", unit)
     local isHostile = canAttack and (not isFriend)
 
-    -- Positional checks first (we do not special-case dead here)
+    -- Positional checks first
     if val == "Behind" then
         if type(UnitXP) == "function" then
             local ok, behind = pcall(UnitXP, "behind", "player", unit)
@@ -1869,7 +1960,6 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
                 return (behind == true)
             end
         end
-        -- If we can't query, don't kill the icon.
         return true
 
     elseif val == "In front" then
@@ -1883,14 +1973,7 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
         return true
     end
 
-    ----------------------------------------------------------------
     -- Dead-target guard for range-based checks
-    --
-    -- When targeting a *dead* unit we treat all "distance check" modes
-    -- as NOT passing, so the condition returns false, except for the
-    -- explicit resurrection spells on friendly targets where we still
-    -- want a normal IsSpellInRange check.
-    ----------------------------------------------------------------
     if val == "In range" or val == "Not in range" or val == "Melee range" then
         if isDead then
             local allowRes = false
@@ -1900,8 +1983,7 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
                 end
             end
 
-            -- Harmful dead or friendly dead with non-res spell:
-            -- distance condition should simply NOT pass.
+            -- Harmful dead or friendly dead with non-res spell: distance condition should simply NOT pass
             if not allowRes then
                 return false
             end
@@ -1918,20 +2000,15 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
         overrideMode = _GetSpellRangeOverrideMode(spellName)
     end
 
-    -- Prefer IsSpellInRange when we know which spell this icon represents
-    -- and it is NOT in the "broken spell" override list.
+    -- Prefer IsSpellInRange when knowing which spell this icon represents
     if spellName and overrideMode == nil then
         inRange = _IsSpellInRangeSafe(spellName, unit)
     end
 
-    -- Fallback when IsSpellInRange isn't usable:
-    --  - For spell-bound icons: treat as melee or ranged according to override,
-    --    or default to melee-range via UnitXP("meleeAutoAttack").
-    --  - For generic icons (items/auras): use a simple generic distance threshold.
+    -- Fallback when IsSpellInRange isn't usable
     if inRange == nil then
         if spellName then
             if overrideMode == "melee" then
-                -- Broken spell flagged as melee: trust UnitXP melee distance.
                 local dist = _GetUnitDistanceYds(unit, "melee") or _GetUnitDistanceYds(unit, nil)
                 if not dist then
                     inRange = true
@@ -1951,7 +2028,7 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
                 end
 
             else
-                -- No override: assume "melee-ish" ability when we can't do a proper range check.
+                -- No override: assume "melee-ish" ability when the addon can't do a proper range check
                 local dist = _GetUnitDistanceYds(unit, "melee") or _GetUnitDistanceYds(unit, nil)
                 if not dist then
                     -- No distance info at all: don't kill the icon.
@@ -1980,7 +2057,7 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
         return not inRange
 
     elseif val == "Melee range" then
-        -- We already blocked dead targets above; this is only for living units.
+        -- already blocked dead targets above; this is only for living units.
         local dist = _GetUnitDistanceYds(unit, "melee") or _GetUnitDistanceYds(unit, nil)
         if not dist then
             return true
@@ -2098,100 +2175,6 @@ local function _PassesTargetUnitType(condTbl, unit)
     return true
 end
 
--- Optional external hook for cluster detection: function DoiteConditions_FindNearestNPCAroundTarget(unit) -> distanceYds or nil
-local function _GetNearestNpcDistanceFromUnit(unit)
-    local cb = _G.DoiteConditions_FindNearestNPCAroundTarget
-    if type(cb) == "function" then
-        local ok, dist = pcall(cb, unit)
-        if ok and type(dist) == "number" and dist >= 0 then
-            return dist
-        end
-    end
-    return nil
-end
-
--- Optional AoE thresholds derived from spell DBC (if you want it)
-local function _GetAoeThresholdForSpell(spellName, kind)
-    if not spellName or not GetSpellIdForName or not GetSpellRecField then
-        return nil
-    end
-    local sid = GetSpellIdForName(spellName)
-    if not sid or sid <= 0 then return nil end
-
-    -- Using "rangeMax" as a rough radius proxy (yards*10)
-    local raw = GetSpellRecField(sid, "rangeMax")
-    if not raw or raw <= 0 then return nil end
-
-    local maxYds = raw / 10
-
-    if kind == "single" then
-        return math.min(maxYds * 0.4, maxYds)
-    elseif kind == "range" then
-        return math.min(maxYds * 0.5, maxYds)
-    elseif kind == "melee" then
-        return math.min(maxYds * 0.3, maxYds)
-    end
-    return nil
-end
-
--- Main "targetSingleAOE" eval. Semantics:
---   "Single target" -> no other NPCs within close radius
---   "AOE (Range)"   -> at least one NPC within ~10 yards (or AoE-based)
---   "AOE (Melee)"   -> at least one NPC within ~5 yards (or AoE-based)
-local function _PassesTargetSingleAOE(condTbl, unit, spellName)
-    if not condTbl or not unit then return true end
-
-    local val = _NormalizeTargetField(condTbl.targetSingleAOE)
-    if not val then
-        return true
-    end
-    if not UnitExists or not UnitExists(unit) then
-        return true
-    end
-
-    -- Dead-target guard:
-    -- For dead units (friendly or hostile) we always treat Single/AOE as false.
-    -- This stops corpse targets from ever satisfying these cluster conditions.
-    if UnitIsDead and UnitIsDead(unit) == 1 then
-        return false
-    end
-
-    local nearest = _GetNearestNpcDistanceFromUnit(unit)
-    if not nearest then
-        -- No neighbor info: do not fail the icon.
-        return true
-    end
-
-    local singleClose = _G.DoiteConditions_SingleCloseThresholdYds or 8
-    local aoeRange    = _G.DoiteConditions_AoeRangeThresholdYds    or 10
-    local aoeMelee    = _G.DoiteConditions_AoeMeleeThresholdYds    or 0.2
-
-    -- If you have DBC AoE info and want dynamic thresholds, plug it in here.
-    local tSingle = _GetAoeThresholdForSpell(spellName, "single")
-    if tSingle then singleClose = tSingle end
-
-    local tRange = _GetAoeThresholdForSpell(spellName, "range")
-    if tRange then aoeRange = tRange end
-
-    local tMelee = _GetAoeThresholdForSpell(spellName, "melee")
-    if tMelee then aoeMelee = tMelee end
-
-    if val == "Single target" then
-        -- Require "no other NPC is close"
-        return nearest > singleClose
-
-    elseif val == "AOE (Range)" then
-        -- Require at least one neighbor within range-AoE radius
-        return nearest <= aoeRange
-
-    elseif val == "AOE (Melee)" then
-        -- Require at least one neighbor within melee-AoE radius
-        return nearest <= aoeMelee
-    end
-
-    return true
-end
-
 -- === Weapon filter helpers (Two-Hand / Shield / Dual-Wield) =============
 
 local function _ClassifyEquippedSlot(slot)
@@ -2207,7 +2190,6 @@ local function _ClassifyEquippedSlot(slot)
     -- Use the same itemID parsing you tested in /run
     local itemId = tonumber(str_match(link, "item:(%d+)"))
     if not itemId then
-        -- We know something is equipped, but we can’t classify it yet
         return { hasItem = true }
     end
 
@@ -2253,8 +2235,7 @@ local function _ClassifyEquippedSlot(slot)
 end
 
 local function _GetEquippedWeaponState()
-    -- Returns hasTwoHand, hasShieldOffhand, isDualWield; nil,nil,nil if
-    -- we cannot inspect inventory at all.
+    -- Returns hasTwoHand, hasShieldOffhand, isDualWield; nil,nil,nil if cannot inspect inventory at all.
     if not GetInventoryItemLink or type(GetItemInfo) ~= "function" then
         return nil, nil, nil
     end
@@ -2945,9 +2926,9 @@ local function _RebuildAuraUsageFlags()
     end
 end
 
--- Global flags: do we have ANY icons that use targetDistance / targetSingleAOE / targetUnitType?
-_hasAnyTargetMods_Ability = false   -- abilities + items
-_hasAnyTargetMods_Aura    = false   -- buff/debuff icons
+-- Global flags: do we have ANY icons that use targetDistance / targetUnitType?
+_hasAnyTargetMods_Ability = false
+_hasAnyTargetMods_Aura    = false
 
 local function _IconHasTargetMods_AbilityOrItem(data)
     if not data or not data.conditions then return false end
@@ -3172,8 +3153,6 @@ local function CheckAbilityConditions(data)
     if show and (c.targetDistance or c.targetUnitType or c.targetAlive or c.targetDead) then
         local unitForTarget = nil
 
-        -- If we have a target and either explicit flags or no flags at all,
-        -- treat "target" as the reference unit for these checks.
         if UnitExists("target") then
             unitForTarget = "target"
         end
@@ -3399,8 +3378,6 @@ local function CheckItemConditions(data)
     if show and (c.targetDistance or c.targetUnitType or c.targetAlive or c.targetDead) then
         local unitForTarget = nil
 
-        -- Same idea as abilities: if we have a target, use it as the reference
-        -- for distance / unit-type checks.
         if UnitExists("target") then
             unitForTarget = "target"
         end
@@ -3619,12 +3596,25 @@ local function CheckAuraConditions(data)
 
     -- Self auras — aura on player, regardless of target
     if (not found) and allowSelf then
-        local s = auraSnapshot.player
-        if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
+        local s   = auraSnapshot.player
+        local hit = false
+
+        if s then
+            -- Buffs: unchanged.
+            if wantBuff and s.buffs[name] then
+                hit = true
+            -- Debuffs: overflow-aware.
+            elseif wantDebuff and _UnitHasOverflowDebuff("player", name) then
+                hit = true
+            end
+        end
+
+        if hit then
             found = true
         else
             -- light live probe if snapshot missed it
-            local i, hit = 1, false
+            local i = 1
+            local liveHit = false
             if wantBuff then
                 while i <= 40 do
                     local n = _GetAuraName("player", i, false)
@@ -3632,13 +3622,13 @@ local function CheckAuraConditions(data)
                         break  -- real end of list
                     end
                     if n ~= "" and n == name then
-                        hit = true
+                        liveHit = true
                         break
                     end
                     i = i + 1
                 end
             end
-            if (not hit) and wantDebuff then
+            if (not liveHit) and wantDebuff then
                 i = 1
                 while i <= 40 do
                     local n = _GetAuraName("player", i, true)
@@ -3646,29 +3636,53 @@ local function CheckAuraConditions(data)
                         break
                     end
                     if n ~= "" and n == name then
-                        hit = true
+                        liveHit = true
                         break
                     end
                     i = i + 1
                 end
             end
-            if hit then found = true end
+            if liveHit then found = true end
         end
     end
 
     -- Target (help) — requires friendly target (already gated above)
     if (not found) and allowHelp then
         local s = auraSnapshot.target
-        if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
-            found = true
+        if s then
+            local hit = false
+
+            -- Buff-type icons: unchanged.
+            if wantBuff and s.buffs[name] then
+                hit = true
+            -- Debuff-type icons: overflow-aware.
+            elseif wantDebuff and _UnitHasOverflowDebuff("target", name) then
+                hit = true
+            end
+
+            if hit then
+                found = true
+            end
         end
     end
 
     -- Target (harm) — requires hostile target (already gated above)
     if (not found) and allowHarm then
         local s = auraSnapshot.target
-        if s and ((wantBuff and s.buffs[name]) or (wantDebuff and s.debuffs[name])) then
-            found = true
+        if s then
+            local hit = false
+
+            -- Buff-type icons: unchanged.
+            if wantBuff and s.buffs[name] then
+                hit = true
+            -- Debuff-type icons: overflow-aware.
+            elseif wantDebuff and _UnitHasOverflowDebuff("target", name) then
+                hit = true
+            end
+
+            if hit then
+                found = true
+            end
         end
     end
 
