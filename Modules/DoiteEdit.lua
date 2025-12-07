@@ -792,38 +792,64 @@ end
 
 
 -- Local copy of the TitleCase helper used by DoiteAuras (for pretty printing aura names)
+-- Special-cases Roman numerals (II, IV, VI, VIII, X, etc.) so they stay fully uppercase.
 local function AuraCond_TitleCase(str)
     if not str then return "" end
     str = tostring(str)
+
     local exceptions = {
         ["of"]=true, ["and"]=true, ["the"]=true, ["for"]=true,
         ["in"]=true, ["on"]=true, ["to"]=true, ["a"]=true,
         ["an"]=true, ["with"]=true, ["by"]=true, ["at"]=true
     }
+
+    local function IsRomanNumeralToken(core)
+        if not core or core == "" then return false end
+        local upper = string.upper(core)
+        -- Only Roman numeral characters
+        if not string.find(upper, "^[IVXLCDM]+$") then
+            return false
+        end
+        -- Keep it conservative: ranks are usually short
+        if string.len(upper) > 4 then
+            return false
+        end
+        return true
+    end
+
     local result, first = "", true
     local word
     for word in string.gmatch(str, "%S+") do
         local startsParen = (string.sub(word, 1, 1) == "(")
-        local leading = startsParen and "(" or ""
-        local core = startsParen and string.sub(word, 2) or word
+        local leading     = startsParen and "(" or ""
+        local core        = startsParen and string.sub(word, 2) or word
 
         local lowerCore = string.lower(core or "")
-        local c = string.sub(core or "", 1, 1) or ""
-        local rest = string.sub(core or "", 2) or ""
+        local upperCore = string.upper(core or "")
+        local c         = string.sub(core or "", 1, 1) or ""
+        local rest      = string.sub(core or "", 2) or ""
 
-        if first then
-            result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+        -- 1) Roman numerals: keep them fully uppercase
+        if IsRomanNumeralToken(core) then
+            result = result .. leading .. upperCore .. " "
             first = false
         else
-            if startsParen then
+            -- 2) Normal title-case rules
+            if first then
                 result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
-            elseif exceptions[lowerCore] then
-                result = result .. lowerCore .. " "
+                first = false
             else
-                result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                if startsParen then
+                    result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                elseif exceptions[lowerCore] then
+                    result = result .. lowerCore .. " "
+                else
+                    result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                end
             end
         end
     end
+
     result = string.gsub(result, "%s+$", "")
     return result
 end
@@ -956,10 +982,34 @@ local function CreateConditionsUI()
         return list[slot]
     end
 
-    -- typeKey = "ability" | "aura" | "item"; slot = 1..20
+    -- Normalize any extended type keys (eg. "item_trinket", "item_weapon") to their base buckets.
+    local function _NormalizeSepTypeKey(typeKey)
+        if not typeKey then return nil end
+        if typeKey == "ability" or typeKey == "aura" or typeKey == "item" then
+            return typeKey
+        end
+
+        local lower = string.lower(tostring(typeKey))
+
+        -- Map anything that *contains* these substrings back to the base key.
+        -- e.g. "item_trinket_slots" -> "item"
+        if string.find(lower, "ability", 1, true) then
+            return "ability"
+        elseif string.find(lower, "aura", 1, true) then
+            return "aura"
+        elseif string.find(lower, "item", 1, true) then
+            return "item"
+        end
+
+        return nil
+    end
+
+    -- typeKey = "ability" | "aura" | "item" (or extended forms like "item_trinket"); slot = 1..20
     SetSeparator = function(typeKey, slot, title, showLine, isVisible)
-        if typeKey ~= "ability" and typeKey ~= "aura" and typeKey ~= "item" then return end
+        typeKey = _NormalizeSepTypeKey(typeKey)
+        if not typeKey then return end
         if slot < 1 or slot > 20 then return end
+
         local sep = _EnsureSep(typeKey, slot)
         if sep._label then
             sep._label:SetText("|cffffffff" .. (title or "") .. "|r")
@@ -977,12 +1027,20 @@ local function CreateConditionsUI()
 
     -- exported: UpdateConditionsUI calls this
     ShowSeparatorsForType = function(typeKey)
+        -- Map any extended keys ("item_trinket", "item_weapon", etc.) onto base buckets.
+        typeKey = _NormalizeSepTypeKey(typeKey)
+        if not typeKey then
+            -- Unknown type: don't touch anything
+            return
+        end
+
         -- Hide every separator first
         for _, list in pairs(condFrame._seps) do
             for _, sep in pairs(list) do
                 sep:Hide()
             end
         end
+
         -- Then reveal only this type’s visible ones (with line state)
         local mine = condFrame._seps[typeKey] or {}
         for _, sep in pairs(mine) do
@@ -2666,7 +2724,6 @@ end)
     -- Target Distance & Type dropdowns (shared lists)
     ----------------------------------------------------------------
     local distanceChoices = { "Any", "In range", "Melee range", "Not in range", "Behind", "In front" }
-    local singleAoeChoices = { "Any", "Single target", "AOE (Radius ~10 yards - eg. Blizzard)", "AOE (Melee ~5 yards)" }
 
     local unitTypeChoices = {
         "Any", "Players", "NPC",
@@ -4577,7 +4634,6 @@ local function UpdateConditionsUI(data)
             if disableTargetRow then
                 -- clear DB fields
                 a.targetDistance   = nil
-                a.targetSingleAOE  = nil
                 a.targetUnitType   = nil
 
                 -- reset visible state and disable
@@ -5052,8 +5108,14 @@ local function UpdateConditionsUI(data)
             condFrame.cond_item_where_equipped:SetChecked(eq)
             condFrame.cond_item_where_bag:SetChecked(bg)
             condFrame.cond_item_where_missing:SetChecked(ms)
-			
-        -- === TARGET DISTANCE & TYPE (Item) ===
+
+            -- preserve outer isMissing flag for rest of Item logic
+            isMissing = ms
+        end
+		
+		----------------------------------------------------------------
+        -- === TARGET DISTANCE & TYPE (Item) ===   <-- now for ALL items
+        ----------------------------------------------------------------
         if condFrame.cond_item_distanceDD then
             condFrame.cond_item_distanceDD:Show()
             condFrame.cond_item_unitTypeDD:Show()
@@ -5091,17 +5153,11 @@ local function UpdateConditionsUI(data)
             local hasSelfTarget  = (ic.targetSelf == true)
 
             if isMissingForDD or hasSelfTarget then
-                ic.targetSingleAOE = nil
                 ic.targetUnitType  = nil
-
                 _SetDDEnabled(condFrame.cond_item_unitTypeDD,  false, "Unit type")
             else
                 _SetDDEnabled(condFrame.cond_item_unitTypeDD,  true, "Unit type")
             end
-        end
-
-            -- preserve outer isMissing flag for rest of Item logic
-            isMissing = ms
         end
 
         -- USABILITY & COOLDOWN
@@ -5583,7 +5639,6 @@ local function UpdateConditionsUI(data)
             -- Self-only target: UnitType are meaningless
             local isSelfOnly = (a.targetSelf == true)
             if isSelfOnly then
-                a.targetSingleAOE  = nil
                 a.targetUnitType   = nil
 
                 _SetDDEnabled(condFrame.cond_aura_unitTypeDD,  false, "Unit type")

@@ -1228,7 +1228,7 @@ end
 
 
 ----------------------------------------------------------------
--- DoiteAuras Slide Manager (buttery-smooth 60fps animator)
+-- DoiteAuras Slide Manager
 ----------------------------------------------------------------
 local SlideMgr = {
     active = {},
@@ -1257,15 +1257,33 @@ end)
 -- Begin or refresh an animation for 'key'
 -- endTime = GetTime() + remaining  (cap remaining inside caller)
 function SlideMgr:StartOrUpdate(key, dir, baseX, baseY, endTime)
-    local st = self.active[key]
+    local st  = self.active[key]
+    local now = GetTime()
+
     if not st then
-        st = { dir = dir or "center", baseX = baseX or 0, baseY = baseY or 0, endTime = endTime or GetTime() }
+        st = {
+            dir     = dir or "center",
+            baseX   = baseX or 0,
+            baseY   = baseY or 0,
+            endTime = endTime or now,
+        }
+
+        -- Capture the length of this slide window once so that
+        -- t runs cleanly from 1 → 0 and center alpha from 0 → 1.
+        local total = st.endTime - now
+        if not total or total <= 0 then
+            total = 0.01
+        end
+        st.total = total
+
         self.active[key] = st
     else
-        st.dir = dir or st.dir
-        st.baseX = baseX or st.baseX
-        st.baseY = baseY or st.baseY
+        st.dir     = dir    or st.dir
+        st.baseX   = baseX  or st.baseX
+        st.baseY   = baseY  or st.baseY
         st.endTime = endTime or st.endTime
+        -- NOTE: st.total is intentionally NOT touched here so
+        -- the fade stays normalized over the original window.
     end
 end
 
@@ -1277,10 +1295,20 @@ end
 -- active:boolean, dx:number, dy:number, alpha:number, suppressGlow:boolean, suppressGrey:boolean
 function SlideMgr:Get(key)
     local st = self.active[key]
-    if not st then return false, 0, 0, 1, false, false end
+    if not st then
+        return false, 0, 0, 1, false, false
+    end
 
-    local now = GetTime()
-    local t = (st.endTime - now) / (st.total or 3.0)
+    local now      = GetTime()
+    local total    = st.total or 3.0
+    if total <= 0 then total = 0.01 end
+
+    local remaining = st.endTime - now
+    if remaining < 0 then remaining = 0 end
+    if remaining > total then remaining = total end
+
+    -- t goes from 1 → 0 over the slide window
+    local t = remaining / total
     if t < 0 then t = 0 elseif t > 1 then t = 1 end
 
     local farX, farY = 0, 0
@@ -1292,9 +1320,17 @@ function SlideMgr:Get(key)
         farX, farY = 0, 0
     end
 
-    local dx = farX * t
-    local dy = farY * t
-    local alpha = (st.dir == "center") and (1.0 - t) or 1.0
+    local dx    = farX * t
+    local dy    = farY * t
+    local alpha
+
+    -- Center: true fade 0 → 1; others stay at full alpha.
+    if st.dir == "center" then
+        alpha = 1.0 - t
+    else
+        alpha = 1.0
+    end
+
     if alpha < 0 then alpha = 0 elseif alpha > 1 then alpha = 1 end
 
     return true, dx, dy, alpha, true, true
@@ -1562,6 +1598,11 @@ local function _EvaluateAuraConditionsList(list)
         i = i + 1
     end
     return true
+end
+
+-- Global wrapper to reduce upvalues in big condition functions
+function DoiteConditions_EvaluateAuraConditionsList(list)
+    return _EvaluateAuraConditionsList(list)
 end
 
 -- === Stacks helpers ===
@@ -2069,6 +2110,11 @@ local function _PassesTargetDistance(condTbl, unit, spellName)
     return true
 end
 
+-- Global wrapper to reduce upvalues in big condition functions
+function DoiteConditions_PassesTargetDistance(condTbl, unit, spellName)
+    return _PassesTargetDistance(condTbl, unit, spellName)
+end
+
 -- Simple "target alive / dead" helper
 local function _PassesTargetStatus(condTbl, unit)
     if not condTbl or not unit then return true end
@@ -2098,6 +2144,11 @@ local function _PassesTargetStatus(condTbl, unit)
     end
 
     return true
+end
+
+-- Global wrapper to reduce upvalues in big condition functions
+function DoiteConditions_PassesTargetStatus(condTbl, unit)
+    return _PassesTargetStatus(condTbl, unit)
 end
 
 -- Parse "Multi: 1+2+3" → { "Humanoid","Beast","Dragonkin" }
@@ -2173,6 +2224,11 @@ local function _PassesTargetUnitType(condTbl, unit)
 
     -- Default: don't fail on unknown label
     return true
+end
+
+-- Global wrapper to reduce upvalues in big condition functions
+function DoiteConditions_PassesTargetUnitType(condTbl, unit)
+    return _PassesTargetUnitType(condTbl, unit)
 end
 
 -- === Weapon filter helpers (Two-Hand / Shield / Dual-Wield) =============
@@ -2317,6 +2373,11 @@ local function _PassesWeaponFilter(condTbl)
     end
 
     return true
+end
+
+-- Global wrapper to reduce upvalues in big condition functions
+function DoiteConditions_PassesWeaponFilter(condTbl)
+    return _PassesWeaponFilter(condTbl)
 end
 
 -- Time remaining formatter for overlay text:
@@ -2485,6 +2546,11 @@ local function _PassesFormRequirement(formStr, auraSnap)
     end
 
     return true
+end
+
+-- Global wrapper to reduce upvalues in big condition functions
+function DoiteConditions_PassesFormRequirement(formStr, auraSnap)
+    return _PassesFormRequirement(formStr, auraSnap)
 end
 
 local function _EnsureAbilityTexture(frame, data)
@@ -3159,13 +3225,13 @@ local function CheckAbilityConditions(data)
 
         if unitForTarget then
             -- 1) Alive / dead requirement (if configured)
-            if not _PassesTargetStatus(c, unitForTarget) then
+            if not DoiteConditions_PassesTargetStatus(c, unitForTarget) then
                 show = false
             -- 2) Range filter (if configured)
-            elseif not _PassesTargetDistance(c, unitForTarget, spellName) then
+            elseif not DoiteConditions_PassesTargetDistance(c, unitForTarget, spellName) then
                 show = false
             -- 3) Unit-type filter (if configured)
-            elseif not _PassesTargetUnitType(c, unitForTarget) then
+            elseif not DoiteConditions_PassesTargetUnitType(c, unitForTarget) then
                 show = false
             end
         end
@@ -3173,14 +3239,14 @@ local function CheckAbilityConditions(data)
 
     -- === Form / Stance requirement (if set)
     if show and c.form and c.form ~= "All" then
-        if not _PassesFormRequirement(c.form, auraSnapshot) then
+        if not DoiteConditions_PassesFormRequirement(c.form, auraSnapshot) then
             show = false
         end
     end
 
     -- === Weapon filter (Two-Hand / Shield / Dual-Wield) ===
     if show and c.weaponFilter and c.weaponFilter ~= "" then
-        if not _PassesWeaponFilter(c) then
+        if not DoiteConditions_PassesWeaponFilter(c) then
             show = false
         end
     end
@@ -3277,7 +3343,7 @@ local function CheckAbilityConditions(data)
 
     -- === Aura Conditions (extra ability gating) ===========================
     if show and c.auraConditions and table.getn(c.auraConditions) > 0 then
-        if not _EvaluateAuraConditionsList(c.auraConditions) then
+        if not DoiteConditions_EvaluateAuraConditionsList(c.auraConditions) then
             show = false
         end
     end
@@ -3384,11 +3450,11 @@ local function CheckItemConditions(data)
 
         if unitForTarget then
             -- Alive / dead requirement (if configured)
-            if not _PassesTargetStatus(c, unitForTarget) then
+            if not DoiteConditions_PassesTargetStatus(c, unitForTarget) then
                 show = false
-            elseif not _PassesTargetDistance(c, unitForTarget, nil) then
+            elseif not DoiteConditions_PassesTargetDistance(c, unitForTarget, nil) then
                 show = false
-            elseif not _PassesTargetUnitType(c, unitForTarget) then
+            elseif not DoiteConditions_PassesTargetUnitType(c, unitForTarget) then
                 show = false
             end
         end
@@ -3398,7 +3464,7 @@ local function CheckItemConditions(data)
     -- Weapon filter (Two-Hand / Shield / Dual-Wield)
     -- --------------------------------------------------------------------
     if show and c.weaponFilter and c.weaponFilter ~= "" then
-        if not _PassesWeaponFilter(c) then
+        if not DoiteConditions_PassesWeaponFilter(c) then
             show = false
         end
     end
@@ -3407,11 +3473,10 @@ local function CheckItemConditions(data)
     -- Form / stance requirement
     -- --------------------------------------------------------------------
     if show and c.form and c.form ~= "All" then
-        if not _PassesFormRequirement(c.form, auraSnapshot) then
+        if not DoiteConditions_PassesFormRequirement(c.form, auraSnapshot) then
             show = false
         end
     end
-
 
     -- --------------------------------------------------------------------
     -- 5. HP threshold (my / target) – same logic as abilities
@@ -3502,7 +3567,7 @@ local function CheckItemConditions(data)
 
     -- === Aura Conditions (extra item gating) ==============================
     if show and c.auraConditions and table.getn(c.auraConditions) > 0 then
-        if not _EvaluateAuraConditionsList(c.auraConditions) then
+        if not DoiteConditions_EvaluateAuraConditionsList(c.auraConditions) then
             show = false
         end
     end
@@ -3728,14 +3793,14 @@ local function CheckAuraConditions(data)
 
     -- === Form / Stance requirement (if set)
     if c.form and c.form ~= "All" then
-        if not _PassesFormRequirement(c.form, auraSnapshot) then
+        if not DoiteConditions_PassesFormRequirement(c.form, auraSnapshot) then
             show = false
         end
     end
 
     -- === Weapon filter (Two-Hand / Shield / Dual-Wield) ===
     if show and c.weaponFilter and c.weaponFilter ~= "" then
-        if not _PassesWeaponFilter(c) then
+        if not DoiteConditions_PassesWeaponFilter(c) then
             show = false
         end
     end
@@ -3945,11 +4010,11 @@ local function CheckAuraConditions(data)
 
         if unitForTargetMods then
             -- Alive / dead requirement (if configured)
-            if not _PassesTargetStatus(c, unitForTargetMods) then
+            if not DoiteConditions_PassesTargetStatus(c, unitForTargetMods) then
                 show = false
-            elseif not _PassesTargetDistance(c, unitForTargetMods, nil) then
+            elseif not DoiteConditions_PassesTargetDistance(c, unitForTargetMods, nil) then
                 show = false
-            elseif not _PassesTargetUnitType(c, unitForTargetMods) then
+            elseif not DoiteConditions_PassesTargetUnitType(c, unitForTargetMods) then
                 show = false
             end
         end
@@ -3957,7 +4022,7 @@ local function CheckAuraConditions(data)
 
     -- === Aura Conditions (extra aura-icon gating) =========================
     if show and c.auraConditions and table.getn(c.auraConditions) > 0 then
-        if not _EvaluateAuraConditionsList(c.auraConditions) then
+        if not DoiteConditions_EvaluateAuraConditionsList(c.auraConditions) then
             show = false
         end
     end
@@ -4298,6 +4363,85 @@ local function _Doite_UpdateOverlayForFrame(frame, key, dataTbl, slideActive)
     end
 end
 
+-- Ability cooldown slider helper (reduces upvalues in ApplyVisuals)
+local function _HandleAbilitySlider(key, ca, dataTbl)
+    -- Only for Ability icons in usable/notcd mode with slider enabled
+    if not (key and ca and dataTbl) then
+        if SlideMgr.active and SlideMgr.active[key] then
+            SlideMgr:Stop(key)
+        end
+        return false, false, false, 0, 0, 1
+    end
+
+    if not (ca.slider and (ca.mode == "usable" or ca.mode == "notcd")) then
+        -- Slider disabled for this icon: make sure it's stopped
+        local had = SlideMgr.active and SlideMgr.active[key]
+        if had then
+            SlideMgr:Stop(key)
+            return false, true, false, 0, 0, 1
+        end
+        SlideMgr:Stop(key)
+        return false, false, false, 0, 0, 1
+    end
+
+    local spellName  = _GetCanonicalSpellNameFromData(dataTbl)
+    local rem, dur   = _AbilityCooldownByName(spellName)
+    local wasSliding = SlideMgr.active and SlideMgr.active[key]
+    local maxWindow  = math.min(3.0, (dur or 0) * 0.6)
+
+    -- Last time *this* spell was actually seen cast (UNIT_CASTEVENT -> _MarkSliderSeen)
+    local lastSeen = spellName and _SliderSeen and _SliderSeen[spellName] or nil
+
+    local hasSeenForThisCD = false
+    if lastSeen and rem and dur and dur > 0 then
+        local now   = GetTime()
+        -- reconstruct approximate cooldown start from (now, rem, dur)
+        local start = now + rem - dur
+        -- small epsilon because lastSeen and start are sampled in
+        if lastSeen + 0.25 >= start then
+            hasSeenForThisCD = true
+        end
+    end
+
+    -- Start only when this cooldown really belongs to this spell, but allow short CDs (GCD-only) as long as they're from this spell.
+    local shouldStart    = hasSeenForThisCD and rem and dur and rem > 0 and rem <= maxWindow
+
+    -- Once sliding, continue as long as there is any remaining cooldown; this lets the slider follow extra GCD applied by other spells.
+    local shouldContinue = wasSliding and rem and rem > 0
+
+    local startedSlide, stoppedSlide = false, false
+
+    if shouldStart or shouldContinue then
+        local baseX, baseY = 0, 0
+        if _GetBaseXY then
+            baseX, baseY = _GetBaseXY(key, dataTbl)
+        end
+
+        SlideMgr:StartOrUpdate(
+            key,
+            (ca.sliderDir or "center"),
+            baseX,
+            baseY,
+            GetTime() + (rem or 0)
+        )
+
+        if not wasSliding then
+            startedSlide = true
+        end
+    else
+        if wasSliding then
+            stoppedSlide = true
+        end
+        SlideMgr:Stop(key)
+    end
+
+    local active, dx, dy, alpha = SlideMgr:Get(key)
+    if not active then
+        return startedSlide, stoppedSlide, false, 0, 0, 1
+    end
+    return startedSlide, stoppedSlide, true, dx or 0, dy or 0, alpha or 1
+end
+
 ---------------------------------------------------------------
 -- Apply visuals to icons
 ---------------------------------------------------------------
@@ -4337,72 +4481,37 @@ function DoiteConditions:ApplyVisuals(key, show, glow, grey)
     ------------------------------------------------------------
     -- Slider (driven by SlideMgr; ignores GCD; super smooth)
     ------------------------------------------------------------
-    local slideActive, dx, dy, slideAlpha, supGlow, supGrey = false, 0, 0, 1, false, false
+    local slideActive, dx, dy, slideAlpha = false, 0, 0, 1
 
-    if dataTbl and dataTbl.type == "Ability" and dataTbl.conditions and dataTbl.conditions.ability then
+    if dataTbl and dataTbl.type == "Ability"
+       and dataTbl.conditions
+       and dataTbl.conditions.ability then
+
         local ca = dataTbl.conditions.ability
-        local startedSlide = false
-        local stoppedSlide = false
+        local startedSlide, stoppedSlide
 
-        -- Slider only ever makes sense for usable/notcd modes
-        if ca.slider and (ca.mode == "usable" or ca.mode == "notcd") then
-            local spellName  = _GetCanonicalSpellNameFromData(dataTbl)
-            local rem, dur   = _AbilityCooldownByName(spellName)
-            local wasSliding = SlideMgr.active and SlideMgr.active[key]
-            local maxWindow  = math.min(3.0, (dur or 0) * 0.6)
-
-            -- Last time *this* spell was actually cast (UNIT_CASTEVENT -> _MarkSliderSeen)
-            local lastSeen = spellName and _SliderSeen and _SliderSeen[spellName] or nil
-
-
-            local hasSeenForThisCD = false
-            if lastSeen and rem and dur and dur > 0 then
-                local now   = GetTime()
-                -- reconstruct approximate cooldown start from (now, rem, dur)
-                local start = now + rem - dur
-                -- small epsilon because lastSeen and start are sampled in
-                if lastSeen + 0.25 >= start then
-                    hasSeenForThisCD = true
-                end
-            end
-
-            local shouldStart    = hasSeenForThisCD and rem and dur and dur > 1.6 and rem > 0 and rem <= maxWindow
-            local shouldContinue = hasSeenForThisCD and wasSliding and rem and rem > 0
-
-            if shouldStart or shouldContinue then
-                local baseX, baseY = 0, 0
-                if _GetBaseXY then baseX, baseY = _GetBaseXY(key, dataTbl) end
-                SlideMgr:StartOrUpdate(key, (ca.sliderDir or "center"), baseX, baseY, GetTime() + rem)
-                startedSlide = (not wasSliding) and true or false
-            else
-                if wasSliding then
-                    stoppedSlide = true
-                end
-                SlideMgr:Stop(key)
-            end
-        else
-            if SlideMgr.active and SlideMgr.active[key] then
-                stoppedSlide = true
-            end
-            SlideMgr:Stop(key)
-        end
+        -- Lightweight wrapper: heavy logic lives in _HandleAbilitySlider
+        startedSlide, stoppedSlide, slideActive, dx, dy, slideAlpha =
+            _HandleAbilitySlider(key, ca, dataTbl)
 
         -- === immediate group reflow on slide start/stop ===
         if (startedSlide or stoppedSlide) and DoiteGroup and DoiteGroup.ApplyGroupLayout then
-            if type(DoiteAuras) == "table" and type(DoiteAuras.GetAllCandidates) == "function" then
+            if type(DoiteAuras) == "table"
+               and type(DoiteAuras.GetAllCandidates) == "function" then
                 _G["DoiteGroup_NeedReflow"] = true
             end
         end
     else
-        SlideMgr:Stop(key)
+        -- Non-ability icons never slide
+        if SlideMgr.active and SlideMgr.active[key] then
+            SlideMgr:Stop(key)
+        end
     end
-
 	
-	    -- Pull the current slide offset/alpha (if sliding)
+    -- Pull the current slide offset/alpha (if sliding)
     local allowSlideShow = false
     do
-        local active, sdx, sdy, a = SlideMgr:Get(key)
-        slideActive, dx, dy, slideAlpha = active, sdx, sdy, a
+
 
         -- ==== Effective flags with OLD-behavior defaults ====
         -- 1) Always allow showing during slide (preview), like OLD code.

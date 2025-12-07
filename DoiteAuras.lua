@@ -109,41 +109,69 @@ _daSpellTex:SetScript("OnEvent", function()
 end)
 
 -- Title-case function with exceptions for small words (keeps first word capitalized)
+-- Special-case Roman numerals like "II", "IV", "VIII", "X" so they stay fully uppercase.
 local function TitleCase(str)
     if not str then return "" end
     str = tostring(str)
+
     local exceptions = {
         ["of"]=true, ["and"]=true, ["the"]=true, ["for"]=true,
         ["in"]=true, ["on"]=true, ["to"]=true, ["a"]=true,
         ["an"]=true, ["with"]=true, ["by"]=true, ["at"]=true
     }
+
+    local function IsRomanNumeralToken(core)
+        if not core or core == "" then return false end
+        local upper = string.upper(core)
+        -- Only Roman numeral characters
+        if not string.find(upper, "^[IVXLCDM]+$") then
+            return false
+        end
+        -- Optional: avoid crazy long sequences; ranks are usually short
+        if string.len(upper) > 4 then
+            return false
+        end
+        return true
+    end
+
     local result, first = "", true
+
     for word in string.gmatch(str, "%S+") do
         -- If the word starts with "(", force-capitalize the first letter after "(".
         local startsParen = (string.sub(word, 1, 1) == "(")
-        local leading = startsParen and "(" or ""
-        local core = startsParen and string.sub(word, 2) or word
+        local leading     = startsParen and "(" or ""
+        local core        = startsParen and string.sub(word, 2) or word
 
         local lowerCore = string.lower(core or "")
-        local c = string.sub(core or "", 1, 1) or ""
-        local rest = string.sub(core or "", 2) or ""
+        local upperCore = string.upper(core or "")
+        local c         = string.sub(core or "", 1, 1) or ""
+        local rest      = string.sub(core or "", 2) or ""
 
-        if first then
-            -- Always capitalize the very first word
-            result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+        -- 1) Roman numerals: keep them fully uppercase, everywhere
+        if IsRomanNumeralToken(core) then
+            result = result .. leading .. upperCore .. " "
             first = false
+
         else
-            if startsParen then
-                -- First word inside parentheses: force-capitalize regardless of exceptions
+            -- 2) Normal title-case rules
+            if first then
+                -- Always capitalize the very first word
                 result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
-            elseif exceptions[lowerCore] then
-                -- Normal small-word behavior
-                result = result .. lowerCore .. " "
+                first = false
             else
-                result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                if startsParen then
+                    -- First word inside parentheses: force-capitalize regardless of exceptions
+                    result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                elseif exceptions[lowerCore] then
+                    -- Normal small-word behavior
+                    result = result .. lowerCore .. " "
+                else
+                    result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                end
             end
         end
     end
+
     result = string.gsub(result, "%s+$", "")
     return result
 end
