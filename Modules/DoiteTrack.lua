@@ -1543,6 +1543,8 @@ function DoiteTrack:GetAuraRemainingSeconds(spellId, unit)
     local rem     = base - elapsed
 
     if rem <= 0 then
+        -- past players own duration, forget this entry for ownership purposes
+        bucket[spellId] = nil
         return nil
     end
 
@@ -1715,6 +1717,99 @@ end
 -- API Public
 ----------------------------------
 
+-- Public: does this unit have this aura (by name, any rank), regardless of owner?
+function DoiteTrack:HasAnyAuraByName(spellName, unit)
+    if not spellName or not unit then
+        return false, nil
+    end
+
+    local entry = _GetEntryForName(spellName)
+    if not entry or not entry.spellIds then
+        return false, nil
+    end
+
+    -- Cheap "does the unit even exist" guard
+    if not UnitExists or not UnitExists(unit) then
+        return false, nil
+    end
+
+    -- Use SuperWoW's GetUnitField("unit","aura") via _AuraHasSpellId
+    for sid in pairs(entry.spellIds) do
+        if _AuraHasSpellId(unit, sid, entry.kind == "Debuff") then
+            return true, sid
+        end
+    end
+
+    return false, nil
+end
+
+-- Public - consolidated ownership helper for DoiteConditions:
+-- Returns:
+--   remSeconds or nil,
+--   isRecording:boolean,
+--   spellId or nil (best "mine" spell if any),
+--   isMine:boolean,      -- true if at least one *mine* aura exists
+--   isOther:boolean,     -- true if at least one *non-mine* aura exists
+--   ownerKnown:boolean   -- true if we know at least something about ownership
+function DoiteTrack:GetAuraOwnershipByName(spellName, unit)
+    if not spellName or not unit then
+        return nil, false, nil, false, false, false
+    end
+
+    local entry = _GetEntryForName(spellName)
+    if not entry or not entry.spellIds then
+        return nil, false, nil, false, false, false
+    end
+
+    -- Cheap existence guard
+    if not UnitExists or not UnitExists(unit) then
+        return nil, false, nil, false, false, false
+    end
+
+    local bestRem, bestSpellId = nil, nil
+    local recording            = false
+    local hasMine              = false
+    local hasOther             = false
+
+    -- Walk ALL spellIds for this name and inspect ownership per-id
+    for sid in pairs(entry.spellIds) do
+        -- Is this aura (this spellId) actually present on the unit?
+        if _AuraHasSpellId(unit, sid, entry.kind == "Debuff") then
+            local mineSid = self:IsAuraMine(sid, unit)
+
+            if mineSid then
+                hasMine = true
+
+                -- Only ever report remaining time for *our* auras
+                local remSid = self:GetAuraRemainingSeconds(sid, unit)
+                if remSid and remSid > 0 then
+                    if not bestRem or remSid > bestRem then
+                        bestRem    = remSid
+                        bestSpellId = sid
+                    end
+                end
+
+                -- Recording is also "ours only"
+                if self:IsAuraRecording(sid, unit) then
+                    recording = true
+                end
+            else
+                -- Aura with this spellId is present but not ours
+                hasOther = true
+            end
+        end
+    end
+
+    local ownerKnown = (hasMine or hasOther)
+
+    if bestRem ~= nil and bestRem <= 0 then
+        bestRem = nil
+    end
+
+    return bestRem, recording, bestSpellId, hasMine, hasOther, ownerKnown
+end
+
+
 -- Return the baseline duration (DBC or learned) for this spellId/cp, or nil if unknown.
 function DoiteTrack:GetBaselineDuration(spellId, cp)
     if not spellId then return nil end
@@ -1741,13 +1836,29 @@ function DoiteTrack:IsAuraMine(spellId, unit)
         return false
     end
 
-    -- If there is an active session for this spell/unit, it is definitely ours.
+    -- If there is an active session for this spell/unit, it is *probably* ours,
+    -- but only for roughly its expected duration.
     local s = _GetActiveSessionForUnit(spellId, unit)
     if s then
-        return true
+        local base = _GetBaselineDuration(spellId, s.cp or 0)
+        if base and s.appliedAt then
+            local now     = GetTime()
+            local elapsed = now - s.appliedAt
+
+            -- After ~130% of the expected duration, assume the aura on the target
+            -- (if any) now belongs to someone else.
+            if elapsed > (base * 1.3) then
+                _AbortSession(s, "elapsed beyond baseline; assume other owner")
+            else
+                return true
+            end
+        else
+            -- No baseline known (no DBC/learned duration): keep old behavior
+            return true
+        end
     end
 
-    -- Otherwise fall back to "do we have a positive remaining time".
+    -- Fallback: use our runtime remaining-time bucket
     local rem = self:GetAuraRemainingSeconds(spellId, unit)
     return (rem ~= nil and rem > 0)
 end

@@ -1203,11 +1203,6 @@ _daCast:SetScript("OnEvent", function()
     local spellId    = arg4
     local duration   = arg5
 
-    local pGUID = _GetPlayerGUID()
-    if not pGUID or casterGUID ~= pGUID then
-        return
-    end
-
     -- Only care about completed casts / swings for "last used spell".
     if evType ~= "CAST" and evType ~= "MAINHAND" and evType ~= "OFFHAND" then
         return
@@ -1222,9 +1217,6 @@ _daCast:SetScript("OnEvent", function()
         return
     end
 
-    local now = _Now() or 0
-
-    -- Slider gating: only allow sliders for spells actually seen cast.
     if evType == "CAST" then
         _MarkSliderSeen(name)
     end
@@ -1521,38 +1513,32 @@ local function _PlayerAuraRemainingSeconds(auraName)
 end
 
 -- === DoiteTrack-powered aura ownership + remaining time ===
-
--- Returns: remSeconds or nil, isRecording, spellId or nil, isMine, isOther, mineKnown
 local function _DoiteTrackAuraOwnership(spellName, unit)
     if not DoiteTrack or not spellName or not unit then
         return nil, false, nil, false, false, false
     end
 
-    local rem, recording, sid = nil, false, nil
-    if DoiteTrack.GetAuraRemainingOrRecordingByName then
-        rem, recording, sid = DoiteTrack:GetAuraRemainingOrRecordingByName(spellName, unit)
-        if rem and rem <= 0 then
-            rem = nil
-        end
+    -- Hard dependency on the new consolidated helper.
+    if not DoiteTrack.GetAuraOwnershipByName then
+        return nil, false, nil, false, false, false
     end
 
-    local mine, mineKnown = false, false
-    if DoiteTrack.IsAuraMineByName then
-        local isMineRaw = DoiteTrack:IsAuraMineByName(spellName, unit)
-        if isMineRaw ~= nil then
-            mine      = (isMineRaw == true)
-            mineKnown = true
-        end
+    local rem, recording, sid, isMine, isOther, ownerKnown =
+        DoiteTrack:GetAuraOwnershipByName(spellName, unit)
+
+    -- Normalise remaining time
+    if rem ~= nil and rem <= 0 then
+        rem = nil
     end
 
-    local isOther = false
-    if mineKnown and not mine then
-        isOther = true
+    -- Extra safety: never leak timing/recording from *only-other* auras
+    if ownerKnown and not isMine then
+        rem       = nil
+        recording = false
     end
 
-    return rem, recording, sid, mine, isOther, mineKnown
+    return rem, recording, sid, isMine, isOther, ownerKnown
 end
-
 
 -- Unified remaining-time provider used by existing call sites (DoiteTrack only).
 local function _DoiteTrackAuraRemainingSeconds(spellName, unit)
@@ -2424,7 +2410,7 @@ local function _ClassifyEquippedSlot(slot)
         return nil
     end
 
-    -- Use the same itemID parsing you tested in /run
+    -- Use the same itemID
     local itemId
     local _, _, idStr = str_find(link, "item:(%d+)")
     if idStr then
