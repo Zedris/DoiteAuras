@@ -2009,5 +2009,6 @@ end
 --------------------
 -- Ingame selftest
 --------------------
--- /run d=DoiteTrack;n="Rend";u="target";rem,rec,sid,hm,ho,ok=d:GetAuraOwnershipByName(n,u);print("has",ok,"sid",sid,"mine",hm,"other",ho,"rem",rem,"rec",rec)
+-- Owner: /run d=DoiteTrack;n="Rend";u="target";rem,rec,sid,hm,ho,ok=d:GetAuraOwnershipByName(n,u);print("has",ok,"sid",sid,"mine",hm,"other",ho,"rem",rem,"rec",rec)
+-- DurationIndex: /run id=123;idx=GetSpellRecField(id,"durationIndex");d=DoiteTrack:GetBaselineDuration(id,0);print("id",id,"idx",idx,"sec",d)
 -- /run local id=11574 local d=DoiteTrack local r=d:GetAuraRemainingSeconds(id,"target") local c=d:IsAuraRecording(id,"target") local m=d:IsAuraMine(id,"target") local b=d:GetBaselineDuration(id,0) print("r",r,"c",c,"m",m,"b",b)
