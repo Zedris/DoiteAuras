@@ -31,11 +31,11 @@ _Timestamps are available in the description._
 - `/da` or `/doite` or `/doiteauras`
 
 ## Shared exported builds
-- Warrior: LINK
-- Druid: [coming soon]: LINK
-- Kara40 Boss Debuffs: LINK
+- Warrior: [**LINK**](https://pastebin.com/kh9b4Vex)
+- Druid: [coming soon]: **LINK**
+- Kara40 Boss Debuffs: [**LINK**](https://pastebin.com/mf7KVYTX)
+- Melee consumes: [**LINK**](https://pastebin.com/kknCLm6A)
 _To import - copy the text, press the import button inside DoiteAuras in-game and paste._
-<iframe src="https://pastebin.com/embed_iframe/kh9b4Vex" style="border:none;width:100%"></iframe>
 
 ## Installation
 1.  Navigate to your World of Warcraft installation folder.
