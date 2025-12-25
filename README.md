@@ -35,6 +35,7 @@ _Timestamps are available in the description._
 - Druid: [coming soon]: **LINK**
 - Kara40 Boss Debuffs: [**LINK**](https://pastebin.com/mf7KVYTX)
 - Melee consumes: [**LINK**](https://pastebin.com/kknCLm6A)
+
 _To import - copy the text, press the import button inside DoiteAuras in-game and paste._
 
 ## Installation
