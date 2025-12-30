@@ -6,7 +6,7 @@ _Yes, I know about the Paladin tracking of time remaining: judgement of wisdom/l
 
 > [!IMPORTANT]
 >
-> **Vanilla 1.12 API is very limited, hence not many modern client addons work. Therefore, this addon requires you to have the following mods to extend the API:**
+> **Vanilla 1.12 API is very limited. Therefore, this addon requires you to have the following mods to extend the API:**
 > - [SuperWoW](https://github.com/balakethelock/SuperWoW) installed.
 > - [Nampower](https://gitea.com/avitasia/nampower) installed.
 > - [UnitXP_SP3](https://codeberg.org/konaka/UnitXP_SP3) installed.
