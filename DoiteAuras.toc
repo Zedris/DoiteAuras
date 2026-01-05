@@ -2,7 +2,7 @@
 ## Title: |cff6FA8DC[DoiteAuras]|r
 ## Notes: Simplified WeakAura-style addon
 ## Author: Doite
-## Version: 1.2.4
+## Version: 1.2.5
 ## SavedVariablesPerCharacter: DoiteAurasDB
 
 DoiteAuras.lua
