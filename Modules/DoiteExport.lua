@@ -1481,7 +1481,22 @@ local function DE_CreateImportFrame()
   edit:SetWidth(190)
   edit:SetHeight(10000)
 
-  -- Click anywhere inside to focus, then Ctrl+V
+  -- Click anywhere inside the import box area to focus the editbox (not just the tiny clickable rect)
+  if boxContainer.EnableMouse then
+    boxContainer:EnableMouse(true)
+    boxContainer:SetScript("OnMouseDown", function()
+      edit:SetFocus()
+    end)
+  end
+
+  if scroll.EnableMouse then
+    scroll:EnableMouse(true)
+    scroll:SetScript("OnMouseDown", function()
+      edit:SetFocus()
+    end)
+  end
+
+  -- Still allow direct clicks on the editbox itself
   edit:SetScript("OnMouseDown", function()
     this:SetFocus()
   end)
