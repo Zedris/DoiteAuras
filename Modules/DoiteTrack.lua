@@ -576,6 +576,7 @@ _IsPlayerDruid = false
 _IsPlayerRogue = false
 local _CarnageRank = 0             -- druid: >0 enables Carnage proc logic
 local _TasteForBloodRank = 0       -- rogue: 0..3, adds +2s per point to manual Rupture
+local _ImprovedBladeTacticsRank = 0 -- rogue: 0..3, +15/30/45% to Slice and Dice manual duration
 
 -- Druid Carnage proc detection
 local _FerociousBiteSpellIdCache = {} -- [spellId] = true/false
@@ -638,6 +639,7 @@ end
 local function _UpdateTalentCaches()
   _CarnageRank = 0
   _TasteForBloodRank = 0
+  _ImprovedBladeTacticsRank = 0
 
   if not UnitClass then
     _IsPlayerDruid = false
@@ -660,6 +662,7 @@ local function _UpdateTalentCaches()
 
   local needCarnage = _IsPlayerDruid
   local needTaste = _IsPlayerRogue
+  local needBlade = _IsPlayerRogue
 
   local numTabs = tonumber(GetNumTalentTabs()) or 0
   local tab
@@ -678,7 +681,11 @@ local function _UpdateTalentCaches()
           _TasteForBloodRank = tonumber(rank) or 0
           needTaste = false
         end
-        if (not needCarnage) and (not needTaste) then
+        if needBlade and norm == "improved blade tactics" then
+          _ImprovedBladeTacticsRank = tonumber(rank) or 0
+          needBlade = false
+        end
+        if (not needCarnage) and (not needTaste) and (not needBlade) then
           return
         end
       end
@@ -1011,25 +1018,28 @@ function DoiteTrack:_RecomputeEventNeeds()
   local palTracked = false
   if _G["DoiteTrack_IsPaladin"] == true then
     local e
-    e = TrackedByNameNorm["judgement of the crusader"] or TrackedByNameNorm["judgment of the crusader"] or
-        TrackedByNameNorm["judgement of crusader"] or TrackedByNameNorm["judgment of crusader"]
+
+    e = TrackedByNameNorm["judgement of the crusader"]
     if e and e.onlyMine == true and e.kind == "Debuff" then
       palTracked = true
     end
+
     if not palTracked then
-      e = TrackedByNameNorm["judgement of light"] or TrackedByNameNorm["judgment of light"]
+      e = TrackedByNameNorm["judgement of light"]
       if e and e.onlyMine == true and e.kind == "Debuff" then
         palTracked = true
       end
     end
+
     if not palTracked then
-      e = TrackedByNameNorm["judgement of wisdom"] or TrackedByNameNorm["judgment of wisdom"]
+      e = TrackedByNameNorm["judgement of wisdom"]
       if e and e.onlyMine == true and e.kind == "Debuff" then
         palTracked = true
       end
     end
+
     if not palTracked then
-      e = TrackedByNameNorm["judgement of justice"] or TrackedByNameNorm["judgment of justice"]
+      e = TrackedByNameNorm["judgement of justice"]
       if e and e.onlyMine == true and e.kind == "Debuff" then
         palTracked = true
       end
@@ -1743,13 +1753,13 @@ function DoiteTrack:_OnAuraNPEvent()
             local match = false
             if norm then
               if pj.pendingToken == "crusader" then
-                match = (norm == "judgement of the crusader" or norm == "judgment of the crusader")
+                match = (norm == "judgement of the crusader")
               elseif pj.pendingToken == "light" then
-                match = (norm == "judgement of light" or norm == "judgment of light")
+                match = (norm == "judgement of light")
               elseif pj.pendingToken == "wisdom" then
-                match = (norm == "judgement of wisdom" or norm == "judgment of wisdom")
+                match = (norm == "judgement of wisdom")
               elseif pj.pendingToken == "justice" then
-                match = (norm == "judgement of justice" or norm == "judgment of justice")
+                match = (norm == "judgement of justice")
               end
             end
 
@@ -1887,59 +1897,30 @@ function DoiteTrack:_OnAuraNPEvent()
   -- This enables the Judgement correlation mode (SPELL_CAST_EVENT + removed events).
   ----------------------------------------------------------------
   if event == "AURA_CAST_ON_SELF" and _G["DoiteTrack_IsPaladin"] == true and _G["DoiteTrack_PalJ_Tracked"] == true then
-    if spellNameNorm then
-      local token = nil
-      if spellNameNorm == "seal of the crusader" or spellNameNorm == "seal of the crusader" then
-        -- (kept as-is; norm already lowercased, exact spelling handled by client)
-        token = "crusader"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
+    local token = nil
+    if spellNameNorm == "seal of the crusader" then
+      token = "crusader"
+    elseif spellNameNorm == "seal of light" then
+      token = "light"
+    elseif spellNameNorm == "seal of wisdom" then
+      token = "wisdom"
+    elseif spellNameNorm == "seal of justice" then
+      token = "justice"
+    end
+
+    if token then
+      local pj = _G["DoiteTrack_PalJ"]
+      if type(pj) ~= "table" then
+        pj = {}
+        _G["DoiteTrack_PalJ"] = pj
       end
 
-      -- Correct Crusader spelling (with "the")
-      if spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      end
+      pj.mode = true
+      pj.sealToken = token
+      pj.sealSpellId = spellId
 
-      -- Actual requested names:
-      if spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      elseif spellNameNorm == "seal of light" then
-        token = "light"
-      elseif spellNameNorm == "seal of wisdom" then
-        token = "wisdom"
-      elseif spellNameNorm == "seal of justice" then
-        token = "justice"
-      elseif spellNameNorm == "seal of the crusader" then
-        token = "crusader"
-      end
-
-      if token then
-        local pj = _G["DoiteTrack_PalJ"]
-        if type(pj) ~= "table" then
-          pj = {}
-          _G["DoiteTrack_PalJ"] = pj
-        end
-
-        pj.mode = true
-        pj.sealToken = token
-        pj.sealSpellId = spellId
-
-        self:_RecomputeEventNeeds()
-        self:_ApplyEventRegistration()
-      end
+      self:_RecomputeEventNeeds()
+      self:_ApplyEventRegistration()
     end
   end
 
@@ -2046,6 +2027,14 @@ function DoiteTrack:_OnAuraNPEvent()
       if manualSec and manualSec > 0 and _IsPlayerRogue and _TasteForBloodRank and _TasteForBloodRank > 0 then
         if spellNameNorm == "rupture" then
           manualSec = manualSec + (_TasteForBloodRank * 2)
+        end
+      end
+
+      -- Rogue SC: Improved Blade Tactics increases Slice and Dice duration by +15%/+30%/+45%. Apply to the *manual* CP-table duration (same place as Rupture edge case).
+      if manualSec and manualSec > 0 and _IsPlayerRogue and _ImprovedBladeTacticsRank and _ImprovedBladeTacticsRank > 0 then
+        if spellNameNorm == "slice and dice" then
+          local pct = _ImprovedBladeTacticsRank * 15
+          manualSec = math.floor((manualSec * (100 + pct)) / 100 + 0.5)
         end
       end
     end
@@ -2172,9 +2161,53 @@ end
 local TrackFrame = CreateFrame("Frame", "DoiteTrackFrame")
 DoiteTrack._frame = TrackFrame
 
-TrackFrame:RegisterEvent("PLAYER_LOGIN")
 TrackFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-TrackFrame:RegisterEvent("ADDON_LOADED")
+
+---------------------------------------------------------------
+-- Delayed init helper (1s after PLAYER_ENTERING_WORLD)
+---------------------------------------------------------------
+function DoiteTrack:_ScheduleDelayedInit()
+  local f = self._frame
+  if not f then
+    return
+  end
+
+  local now = GetTime and GetTime() or 0
+
+  -- Always delay 1s on every ENTERING_WORLD (login/reload/zoning/instance)
+  self._initDelayUntil = now + 1.0
+
+  -- If already scheduled, just push the deadline out; don't stack OnUpdate handlers.
+  if self._initDelayActive then
+    return
+  end
+
+  self._initDelayActive = true
+
+  local oldOnUpdate = f:GetScript("OnUpdate")
+
+  f:SetScript("OnUpdate", function()
+    local dt = _G["DoiteTrack"]
+    if not dt or dt._initDelayActive ~= true then
+      f:SetScript("OnUpdate", oldOnUpdate)
+      return
+    end
+
+    local t = GetTime and GetTime() or 0
+    if t < (dt._initDelayUntil or 0) then
+      return
+    end
+
+    -- Fire once, then restore previous OnUpdate
+    dt._initDelayActive = false
+    dt._initDelayUntil = nil
+
+    f:SetScript("OnUpdate", oldOnUpdate)
+
+    -- Run the existing init logic (includes hook attempt + recompute + registration)
+    dt:_OnPlayerLogin()
+  end)
+end
 
 -- Other events will be registered conditionally after login based on watchlist + needs.
 function DoiteTrack:_ApplyEventRegistration()
@@ -2264,8 +2297,8 @@ function DoiteTrack:_ApplyEventRegistration()
 end
 
 TrackFrame:SetScript("OnEvent", function()
-  if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
-    DoiteTrack:_OnPlayerLogin()
+  if event == "PLAYER_ENTERING_WORLD" then
+    DoiteTrack:_ScheduleDelayedInit()
     return
   end
   if event == "LEARNED_SPELL_IN_TAB" then
@@ -2286,11 +2319,6 @@ TrackFrame:SetScript("OnEvent", function()
   end
   if event == "AUTO_ATTACK_SELF" then
     DoiteTrack:_OnAutoAttackSelf()
-    return
-  end
-  if event == "ADDON_LOADED" then
-    -- Hook as soon as DoiteAuras becomes available (no polling)
-    DoiteTrack:_TryHookDoiteAurasRefreshIcons()
     return
   end
   -- Any other event this frame receives (when registered) is NP aura-related
