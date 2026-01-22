@@ -771,6 +771,14 @@ local function InCombat()
   return UnitAffectingCombat("player") == 1
 end
 
+local function InParty()
+  return (GetNumPartyMembers() or 0) > 0
+end
+
+local function InRaid()
+  return (GetNumRaidMembers() or 0) > 0
+end
+
 -- Power percent (0..100)
 local function GetPowerPercent()
   local max = UnitManaMax("player")
@@ -4675,6 +4683,23 @@ local function CheckAbilityConditions(data)
     end
   end
 
+  -- === Group state (party / raid) ===
+  local inPartyFlag = (c.inParty == true)
+  local inRaidFlag = (c.inRaid == true)
+
+  if inPartyFlag or inRaidFlag then
+    local groupOk = false
+    if inPartyFlag and InParty() then
+      groupOk = true
+    end
+    if inRaidFlag and InRaid() then
+      groupOk = true
+    end
+    if not groupOk then
+      show = false
+    end
+  end
+
   -- Cache target facts once per evaluation
   local tf = _DA_GetTargetFacts()
 
@@ -4933,6 +4958,23 @@ local function CheckItemConditions(data)
       show = false
     end
     if outCombatFlag and InCombat() then
+      show = false
+    end
+  end
+
+  -- === Group state (party / raid) ===
+  local inPartyFlag = (c.inParty == true)
+  local inRaidFlag = (c.inRaid == true)
+
+  if inPartyFlag or inRaidFlag then
+    local groupOk = false
+    if inPartyFlag and InParty() then
+      groupOk = true
+    end
+    if inRaidFlag and InRaid() then
+      groupOk = true
+    end
+    if not groupOk then
       show = false
     end
   end
@@ -5321,6 +5363,23 @@ local function CheckAuraConditions(data)
       show = false
     end
     if outCombatFlag and InCombat() then
+      show = false
+    end
+  end
+
+  -- === Group state (party / raid) ===
+  local inPartyFlag = (c.inParty == true)
+  local inRaidFlag = (c.inRaid == true)
+
+  if inPartyFlag or inRaidFlag then
+    local groupOk = false
+    if inPartyFlag and InParty() then
+      groupOk = true
+    end
+    if inRaidFlag and InRaid() then
+      groupOk = true
+    end
+    if not groupOk then
       show = false
     end
   end
