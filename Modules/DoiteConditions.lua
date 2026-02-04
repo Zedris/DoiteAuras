@@ -222,6 +222,11 @@ _editTick:SetScript("OnUpdate", function()
     return
   end
 
+  -- Skip refresh while user is dragging icons or frames (prevents update loop)
+  if _G["DoiteUI_Dragging"] then
+    return
+  end
+
   _editAccum = _editAccum + (arg1 or 0)
   if _editAccum < DOITE_EDIT_TICK then
     return

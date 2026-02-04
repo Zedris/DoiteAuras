@@ -1667,8 +1667,9 @@ local function CreateOrUpdateIcon(key, layer)
         -- default size; actual sizing applied in RefreshIcons
         f:SetWidth(36)
         f:SetHeight(36)
-        f:EnableMouse(false)
-        f:SetMovable(false)
+        f:EnableMouse(false)  -- Will be enabled when editing this icon
+        f:SetMovable(true)    -- Allow movement when dragged
+        f:RegisterForDrag("LeftButton")
 
         -- icon texture (created once)
         f.icon = f:CreateTexture(nil, "BACKGROUND")
@@ -1679,6 +1680,88 @@ local function CreateOrUpdateIcon(key, layer)
         fs:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -2, 2)
         fs:SetText("")
         f.count = fs
+
+        -- Store key for drag handlers
+        f._daKey = key
+
+        -- Drag start handler (only active in edit mode)
+        f:SetScript("OnDragStart", function()
+            local frameKey = this._daKey
+            local editKey = _G["DoiteEdit_CurrentKey"]
+
+            -- Only allow drag if this icon is being edited
+            if not editKey or editKey ~= frameKey then
+                return
+            end
+
+            -- Check if this is a group member (non-leader) - don't allow drag
+            local data = DoiteAurasDB and DoiteAurasDB.spells and DoiteAurasDB.spells[frameKey]
+            if data and data.group and data.group ~= "" and data.group ~= "No" then
+                if not data.isLeader then
+                    -- Show tooltip hint instead of dragging
+                    GameTooltip:SetOwner(this, "ANCHOR_TOP")
+                    GameTooltip:AddLine("Drag the group leader to move this group", 1, 0.8, 0)
+                    GameTooltip:Show()
+                    return
+                end
+            end
+
+            -- Start dragging
+            _G["DoiteUI_Dragging"] = true
+            this:StartMoving()
+        end)
+
+        -- Drag stop handler
+        f:SetScript("OnDragStop", function()
+            this:StopMovingOrSizing()
+            _G["DoiteUI_Dragging"] = false
+            GameTooltip:Hide()
+
+            local frameKey = this._daKey
+            local editKey = _G["DoiteEdit_CurrentKey"]
+
+            -- Only update position if we were editing this icon
+            if not editKey or editKey ~= frameKey then
+                return
+            end
+
+            -- Calculate position relative to screen center
+            local x, y = this:GetCenter()
+            local px, py = UIParent:GetCenter()
+            local scale = this:GetEffectiveScale()
+            local pscale = UIParent:GetEffectiveScale()
+
+            local offsetX = (x * scale) / pscale - px
+            local offsetY = (y * scale) / pscale - py
+
+            -- Apply snap-to-grid if enabled
+            if DoiteAurasDB.settings and DoiteAurasDB.settings.snapToGrid then
+                local grid = DoiteAurasDB.settings.gridSize or 20
+                offsetX = math.floor(offsetX / grid + 0.5) * grid
+                offsetY = math.floor(offsetY / grid + 0.5) * grid
+            end
+
+            -- Round to integers
+            offsetX = math.floor(offsetX + 0.5)
+            offsetY = math.floor(offsetY + 0.5)
+
+            -- Update DB
+            local data = DoiteAurasDB and DoiteAurasDB.spells and DoiteAurasDB.spells[frameKey]
+            if data then
+                data.offsetX = offsetX
+                data.offsetY = offsetY
+            end
+
+            -- Sync sliders in edit panel
+            if DoiteEdit_SyncSlidersToPosition then
+                DoiteEdit_SyncSlidersToPosition(frameKey, offsetX, offsetY)
+            end
+
+            -- Flush any pending heavy work
+            if DoiteEdit_FlushHeavy then
+                DoiteEdit_FlushHeavy()
+            end
+        end)
     end
 
     -- Wrap Show() exactly once so bucket Disable always wins
@@ -1706,6 +1789,14 @@ local function CreateOrUpdateIcon(key, layer)
                 self._daOrigShow(self)
             end
         end
+    end
+
+    -- Enable mouse only when this icon is being edited
+    local editKey = _G["DoiteEdit_CurrentKey"]
+    if editKey and editKey == key then
+        f:EnableMouse(true)
+    else
+        f:EnableMouse(false)
     end
 
     -- cache locally as before

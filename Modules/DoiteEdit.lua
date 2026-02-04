@@ -95,6 +95,178 @@ local _DoiteEdit_Throttle = CreateFrame("Frame", "DoiteEditThrottle")
 -- Global flag toggled while the main Edit or Main frames are being dragged
 _G["DoiteUI_Dragging"] = _G["DoiteUI_Dragging"] or false
 
+---------------------------------------------------------------
+-- Grid Overlay for icon positioning
+---------------------------------------------------------------
+local _DoiteGridFrame = nil
+local _DoiteGridLines = {}
+
+-- Create the grid overlay frame
+local function _CreateGridFrame()
+  if _DoiteGridFrame then
+    return _DoiteGridFrame
+  end
+
+  local grid = CreateFrame("Frame", "DoiteGridOverlay", UIParent)
+  grid:SetAllPoints(UIParent)
+  grid:SetFrameStrata("DIALOG")
+  grid:SetFrameLevel(100)
+  grid:EnableMouse(false)  -- Don't capture clicks
+  grid:Hide()
+
+  -- Get DB settings
+  local function getGridSize()
+    if DoiteAurasDB and DoiteAurasDB.settings then
+      return DoiteAurasDB.settings.gridSize or 40
+    end
+    return 40
+  end
+
+  -- Draw grid lines
+  local function DrawGrid()
+    -- Clear existing lines
+    for _, line in ipairs(_DoiteGridLines) do
+      line:Hide()
+    end
+
+    local gridSize = getGridSize()
+    local w, h = UIParent:GetWidth(), UIParent:GetHeight()
+    local cx, cy = w / 2, h / 2
+    local lineIdx = 0
+
+    -- Semi-transparent background
+    if not grid.bg then
+      grid.bg = grid:CreateTexture(nil, "BACKGROUND")
+      grid.bg:SetAllPoints()
+      grid.bg:SetTexture(0, 0, 0)
+      grid.bg:SetAlpha(0.2)
+    end
+
+    -- Vertical lines
+    local x = cx
+    while x <= w do
+      lineIdx = lineIdx + 1
+      local line = _DoiteGridLines[lineIdx]
+      if not line then
+        line = grid:CreateTexture(nil, "OVERLAY")
+        _DoiteGridLines[lineIdx] = line
+      end
+      line:SetTexture(1, 1, 1)
+      line:SetAlpha(x == cx and 0.8 or 0.3)  -- Center line brighter
+      line:SetWidth(x == cx and 2 or 1)
+      line:SetHeight(h)
+      line:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, cy)
+      line:Show()
+      x = x + gridSize
+    end
+    x = cx - gridSize
+    while x >= 0 do
+      lineIdx = lineIdx + 1
+      local line = _DoiteGridLines[lineIdx]
+      if not line then
+        line = grid:CreateTexture(nil, "OVERLAY")
+        _DoiteGridLines[lineIdx] = line
+      end
+      line:SetTexture(1, 1, 1)
+      line:SetAlpha(0.3)
+      line:SetWidth(1)
+      line:SetHeight(h)
+      line:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, cy)
+      line:Show()
+      x = x - gridSize
+    end
+
+    -- Horizontal lines
+    local y = cy
+    while y <= h do
+      lineIdx = lineIdx + 1
+      local line = _DoiteGridLines[lineIdx]
+      if not line then
+        line = grid:CreateTexture(nil, "OVERLAY")
+        _DoiteGridLines[lineIdx] = line
+      end
+      line:SetTexture(1, 1, 1)
+      line:SetAlpha(y == cy and 0.8 or 0.3)  -- Center line brighter
+      line:SetWidth(w)
+      line:SetHeight(y == cy and 2 or 1)
+      line:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cx, y)
+      line:Show()
+      y = y + gridSize
+    end
+    y = cy - gridSize
+    while y >= 0 do
+      lineIdx = lineIdx + 1
+      local line = _DoiteGridLines[lineIdx]
+      if not line then
+        line = grid:CreateTexture(nil, "OVERLAY")
+        _DoiteGridLines[lineIdx] = line
+      end
+      line:SetTexture(1, 1, 1)
+      line:SetAlpha(0.3)
+      line:SetWidth(w)
+      line:SetHeight(1)
+      line:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cx, y)
+      line:Show()
+      y = y - gridSize
+    end
+
+    -- Add grid size label at center
+    if not grid.label then
+      grid.label = grid:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+      grid.label:SetPoint("TOP", UIParent, "CENTER", 0, -10)
+    end
+    grid.label:SetText("Grid: " .. gridSize .. "px | Drag icons to reposition")
+  end
+
+  grid.DrawGrid = DrawGrid
+  _DoiteGridFrame = grid
+  return grid
+end
+
+-- Toggle grid visibility
+function DoiteEdit_ToggleGrid()
+  local grid = _CreateGridFrame()
+  if grid:IsShown() then
+    grid:Hide()
+  else
+    grid.DrawGrid()
+    grid:Show()
+  end
+end
+_G["DoiteEdit_ToggleGrid"] = DoiteEdit_ToggleGrid
+
+-- Check if grid is shown
+function DoiteEdit_IsGridShown()
+  return _DoiteGridFrame and _DoiteGridFrame:IsShown()
+end
+_G["DoiteEdit_IsGridShown"] = DoiteEdit_IsGridShown
+
+-- Set grid size
+function DoiteEdit_SetGridSize(size)
+  if not DoiteAurasDB then DoiteAurasDB = {} end
+  if not DoiteAurasDB.settings then DoiteAurasDB.settings = {} end
+  DoiteAurasDB.settings.gridSize = size
+  if _DoiteGridFrame and _DoiteGridFrame:IsShown() then
+    _DoiteGridFrame.DrawGrid()
+  end
+end
+_G["DoiteEdit_SetGridSize"] = DoiteEdit_SetGridSize
+
+-- Toggle snap-to-grid
+function DoiteEdit_ToggleSnapToGrid()
+  if not DoiteAurasDB then DoiteAurasDB = {} end
+  if not DoiteAurasDB.settings then DoiteAurasDB.settings = {} end
+  DoiteAurasDB.settings.snapToGrid = not DoiteAurasDB.settings.snapToGrid
+  return DoiteAurasDB.settings.snapToGrid
+end
+_G["DoiteEdit_ToggleSnapToGrid"] = DoiteEdit_ToggleSnapToGrid
+
+-- Check if snap-to-grid is enabled
+function DoiteEdit_IsSnapToGrid()
+  return DoiteAurasDB and DoiteAurasDB.settings and DoiteAurasDB.settings.snapToGrid
+end
+_G["DoiteEdit_IsSnapToGrid"] = DoiteEdit_IsSnapToGrid
+
 -- Internal immediate heavy helpers (never called directly from UI; only from the throttle)
 local function _DoiteEdit_ImmediateRefresh()
   if DoiteAuras_RefreshList then
@@ -128,6 +300,28 @@ local function DoiteEdit_FlushHeavy()
   _DoiteEdit_ImmediateRefresh()
   _DoiteEdit_ImmediateEvaluate()
 end
+
+-- Expose globally so drag handlers can call it
+_G["DoiteEdit_FlushHeavy"] = DoiteEdit_FlushHeavy
+
+-- Sync sliders to new position after icon drag
+function DoiteEdit_SyncSlidersToPosition(key, x, y)
+  if condFrame and currentKey == key then
+    if condFrame.sliderX then
+      condFrame.sliderX:SetValue(x)
+    end
+    if condFrame.sliderY then
+      condFrame.sliderY:SetValue(y)
+    end
+    if condFrame.sliderXBox then
+      condFrame.sliderXBox:SetText(tostring(math.floor(x + 0.5)))
+    end
+    if condFrame.sliderYBox then
+      condFrame.sliderYBox:SetText(tostring(math.floor(y + 0.5)))
+    end
+  end
+end
+_G["DoiteEdit_SyncSlidersToPosition"] = DoiteEdit_SyncSlidersToPosition
 
 _DoiteEdit_Throttle:SetScript("OnUpdate", function()
   if not _DoiteEdit_PendingHeavy then
@@ -8271,8 +8465,26 @@ function UpdateCondFrameForKey(key)
     DoiteAuraLogicFrame:Hide()
   end
 
+  -- Disable mouse on the previously edited icon (for dragging)
+  local _GetIconFrame = DoiteAuras_GetIconFrame or function(k)
+    return k and _G["DoiteIcon_" .. k]
+  end
+  if currentKey and currentKey ~= key then
+    local oldFrame = _GetIconFrame(currentKey)
+    if oldFrame then
+      oldFrame:EnableMouse(false)
+    end
+  end
+
   currentKey = key
   _G["DoiteEdit_CurrentKey"] = key
+
+  -- Enable mouse on the newly edited icon frame (for dragging)
+  local newFrame = _GetIconFrame(key)
+  if newFrame then
+    newFrame:EnableMouse(true)
+  end
+
   local data = EnsureDBEntry(key)
 
   -- hard-separate condition tables every time the editor opens this entry
@@ -8465,6 +8677,15 @@ end
 function DoiteConditions_Show(key)
   -- toggle: if same key and shown -> hide
   if condFrame and condFrame:IsShown() and currentKey == key then
+    -- Disable mouse on the icon frame when closing edit mode
+    local _GetIconFrame = DoiteAuras_GetIconFrame or function(k)
+      return k and _G["DoiteIcon_" .. k]
+    end
+    local oldFrame = _GetIconFrame(currentKey)
+    if oldFrame then
+      oldFrame:EnableMouse(false)
+    end
+
     condFrame:Hide()
     currentKey = nil
     _G["DoiteEdit_CurrentKey"] = nil   -- clear the edit override
@@ -8893,6 +9114,68 @@ function DoiteConditions_Show(key)
       d.iconSize = value
       DoiteEdit_QueueHeavy()
     end
+
+    -- === Grid Controls (below position sliders) ===
+    local gridY = baseY - 55
+
+    -- Show Grid button
+    local gridBtn = CreateFrame("Button", "DoiteConditions_GridBtn", condFrame, "UIPanelButtonTemplate")
+    gridBtn:SetWidth(80)
+    gridBtn:SetHeight(22)
+    gridBtn:SetPoint("TOPLEFT", condFrame, "TOPLEFT", baseX, gridY)
+    gridBtn:SetText("Show Grid")
+    gridBtn:SetScript("OnClick", function()
+      DoiteEdit_ToggleGrid()
+      if DoiteEdit_IsGridShown() then
+        gridBtn:SetText("Hide Grid")
+      else
+        gridBtn:SetText("Show Grid")
+      end
+    end)
+    condFrame.gridBtn = gridBtn
+
+    -- Snap to Grid checkbox
+    local snapCheck = CreateFrame("CheckButton", "DoiteConditions_SnapCheck", condFrame, "UICheckButtonTemplate")
+    snapCheck:SetWidth(24)
+    snapCheck:SetHeight(24)
+    snapCheck:SetPoint("LEFT", gridBtn, "RIGHT", 10, 0)
+    snapCheck:SetChecked(DoiteEdit_IsSnapToGrid())
+    snapCheck:SetScript("OnClick", function()
+      DoiteEdit_ToggleSnapToGrid()
+    end)
+    local snapLabel = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    snapLabel:SetPoint("LEFT", snapCheck, "RIGHT", 2, 0)
+    snapLabel:SetText("Snap to Grid")
+    condFrame.snapCheck = snapCheck
+    condFrame.snapLabel = snapLabel
+
+    -- Grid size dropdown/input
+    local gridSizeLabel = condFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    gridSizeLabel:SetPoint("LEFT", snapLabel, "RIGHT", 15, 0)
+    gridSizeLabel:SetText("Size:")
+
+    local gridSizeBox = CreateFrame("EditBox", "DoiteConditions_GridSizeBox", condFrame, "InputBoxTemplate")
+    gridSizeBox:SetWidth(40)
+    gridSizeBox:SetHeight(20)
+    gridSizeBox:SetPoint("LEFT", gridSizeLabel, "RIGHT", 5, 0)
+    gridSizeBox:SetAutoFocus(false)
+    gridSizeBox:SetNumeric(true)
+    gridSizeBox:SetMaxLetters(3)
+    local currentSize = (DoiteAurasDB and DoiteAurasDB.settings and DoiteAurasDB.settings.gridSize) or 40
+    gridSizeBox:SetText(tostring(currentSize))
+    gridSizeBox:SetScript("OnEnterPressed", function()
+      local val = tonumber(this:GetText()) or 40
+      if val < 10 then val = 10 end
+      if val > 200 then val = 200 end
+      DoiteEdit_SetGridSize(val)
+      this:SetText(tostring(val))
+      this:ClearFocus()
+    end)
+    gridSizeBox:SetScript("OnEscapePressed", function()
+      this:ClearFocus()
+    end)
+    condFrame.gridSizeLabel = gridSizeLabel
+    condFrame.gridSizeBox = gridSizeBox
 
     -- Keep slider ranges in sync with current resolution/UI scale every time the panel shows
     condFrame:SetScript("OnShow", function(self)
