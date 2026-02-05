@@ -371,6 +371,22 @@ local function ComputeGroupLayout(entries, groupName)
       s = s + 1
     end
 
+    local f = _GetIconFrame(e.key)
+    if f then
+      f._daBlockedByGroup = false
+      -- Do not re-anchor while the slider owns the frame this tick OR if dragging
+      if not f._daSliding and not f._daDragging then
+        if f._daGroupX ~= curX or f._daGroupY ~= curY then
+          f._daGroupX = curX
+          f._daGroupY = curY
+          f:ClearAllPoints()
+          f:SetPoint("CENTER", UIParent, "CENTER", curX, curY)
+        end
+      end
+      if f._daGroupSize ~= baseSize then
+        f._daGroupSize = baseSize
+        f:SetWidth(baseSize)
+        f:SetHeight(baseSize)
     local p = 0
     local v = 1
     while v <= vn do

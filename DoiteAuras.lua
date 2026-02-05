@@ -1745,8 +1745,9 @@ local function CreateOrUpdateIcon(key, layer)
         -- default size; actual sizing applied in RefreshIcons
         f:SetWidth(36)
         f:SetHeight(36)
-        f:EnableMouse(false)
-        f:SetMovable(false)
+        f:EnableMouse(false)  -- Will be enabled when editing this icon
+        f:SetMovable(true)    -- Allow movement when dragged
+        f:RegisterForDrag("LeftButton")
 
         -- icon texture (created once)
         f.icon = f:CreateTexture(nil, "BACKGROUND")
@@ -1757,6 +1758,98 @@ local function CreateOrUpdateIcon(key, layer)
         fs:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -2, 2)
         fs:SetText("")
         f.count = fs
+
+        -- Store key for drag handlers
+        f._daKey = key
+
+        -- Drag start handler (only active in edit mode)
+        f:SetScript("OnDragStart", function()
+            local frameKey = this._daKey
+            local editKey = _G["DoiteEdit_CurrentKey"]
+
+            -- Only allow drag if this icon is being edited
+            if not editKey or editKey ~= frameKey then
+                return
+            end
+
+            -- Check if this is a group member (non-leader) - don't allow drag
+            local data = DoiteAurasDB and DoiteAurasDB.spells and DoiteAurasDB.spells[frameKey]
+            if data and data.group and data.group ~= "" and data.group ~= "No" then
+                if not data.isLeader then
+                    -- Show tooltip hint instead of dragging
+                    GameTooltip:SetOwner(this, "ANCHOR_TOP")
+                    GameTooltip:AddLine("Drag the group leader to move this group", 1, 0.8, 0)
+                    GameTooltip:Show()
+                    return
+                end
+            end
+
+            -- Start dragging (MoveAnything style: plain StartMoving + flag)
+            _G["DoiteUI_Dragging"] = true
+            this:StartMoving()
+            this._daDragging = true
+        end)
+
+        -- Drag stop handler
+        -- Drag stop handler
+        f:SetScript("OnDragStop", function()
+            this:StopMovingOrSizing()
+            this._daDragging = nil
+            _G["DoiteUI_Dragging"] = false
+            GameTooltip:Hide()
+
+            local frameKey = this._daKey
+            
+            -- Only save if valid key
+            if not frameKey then return end
+
+            -- MoveAnything Coordinate Formula:
+            -- Precise deviation from screen center, normalized to frame scale.
+            
+            -- 1. Screen Center (Reference)
+            local rScale = UIParent:GetEffectiveScale()
+            local rX, rY = UIParent:GetCenter()
+            rX, rY = rX * rScale, rY * rScale
+
+            -- 2. Frame Center (Target)
+            local pScale = this:GetEffectiveScale()
+            local pX, pY = this:GetCenter()
+            pX, pY = pX * pScale, pY * pScale
+
+            -- 3. Offset = (Frame - Screen) / FrameScale
+            local x = (pX - rX) / pScale
+            local y = (pY - rY) / pScale
+
+            -- Round for cleaner DB
+            x = math.floor(x * 10 + 0.5) / 10
+            y = math.floor(y * 10 + 0.5) / 10
+
+            -- Update DB
+            local data = DoiteAurasDB and DoiteAurasDB.spells and DoiteAurasDB.spells[frameKey]
+            if data then
+                data.point = "CENTER"
+                data.relativePoint = "CENTER"
+                data.x = x
+                data.y = y
+                -- Legacy fields sync
+                data.offsetX = x
+                data.offsetY = y
+            end
+
+            -- Sync sliders
+            if DoiteEdit_SyncSlidersToPosition then
+                DoiteEdit_SyncSlidersToPosition(frameKey, x, y)
+            end
+
+            if DoiteEdit_FlushHeavy then
+                DoiteEdit_FlushHeavy()
+            end
+            
+            -- Force group layout re-calc so followers snap to new leader pos immediately
+            if DoiteGroup and DoiteGroup.RequestReflow then
+                DoiteGroup.RequestReflow()
+            end
+        end)
     end
 
     -- Wrap Show() exactly once so bucket Disable always wins
@@ -1784,6 +1877,14 @@ local function CreateOrUpdateIcon(key, layer)
                 self._daOrigShow(self)
             end
         end
+    end
+
+    -- Enable mouse only when this icon is being edited
+    local editKey = _G["DoiteEdit_CurrentKey"]
+    if editKey and editKey == key then
+        f:EnableMouse(true)
+    else
+        f:EnableMouse(false)
     end
 
     -- cache locally as before
@@ -2111,24 +2212,35 @@ local function RefreshIcons()
                 size = size or currentSize
                 -- DO NOT SetPoint here for follower without computed pos (avoid snap-back)
             else
-                -- ungrouped or leader: use saved offsets
-                posX = (data and (data.offsetX or data.x)) or 0
-                posY = (data and (data.offsetY or data.y)) or 0
                 size = size or (data and (data.iconSize or data.size)) or 36
             end
         end
+
+        local savedPoint = (data and data.point) or "CENTER"
+        local savedRelPoint = (data and data.relativePoint) or "CENTER"
+        local savedX = (data and (data.x or data.offsetX)) or 0
+        local savedY = (data and (data.y or data.offsetY)) or 0
+
 
         f:SetScale((data and data.scale) or 1)
         f:SetAlpha((data and data.alpha) or 1)
         f:SetWidth(size); f:SetHeight(size)
 
         -- Do not re-anchor while a slide preview owns the frame for this tick
-        if not f._daSliding then
-            if posX ~= nil and posY ~= nil then
-                f:ClearAllPoints()
-                f:SetPoint("CENTER", UIParent, "CENTER", posX, posY)
+        -- AND do not re-anchor if this frame is currently being dragged (prevents snapping back)
+        local isDraggingThis = (f._daDragging == true)
+        if not f._daSliding and not isDraggingThis then
+            f:ClearAllPoints()
+            -- logicsec: Use saved Center-Relative points
+            if posX and posY then
+                 -- Computed position (grouped) OR Saved Position
+                 f:SetPoint("CENTER", UIParent, "CENTER", posX, posY)
+            else
+                 -- Fallback (should have been covered by posX/posY logic above)
+                 f:SetPoint("CENTER", UIParent, "CENTER", savedX, savedY)
             end
         end
+
 
         -- Texture handling (with saved iconTexture fallback; no extra game queries here)
         local displayName = (data and (data.displayName or data.name)) or key
