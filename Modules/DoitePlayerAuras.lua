@@ -412,35 +412,20 @@ local function ProcessBuffCappedSpell(spellId, casterGUID, targetGUID)
   end
   -- check for clearcasting
   if DoitePlayerAuras.IsHiddenByBuffCap("Clearcasting") and
-      targetGUID ~= "0x0000000000000000" and
       targetGUID ~= casterGUID then
-    -- remove clearcasting buff on any spell cast targeting another unit
-    -- not perfect but good enough for now
-    print(tostring(spellId) .. " cast by " .. tostring(casterGUID) .. " on " .. tostring(targetGUID) .. " consumed Clearcasting")
-    RemoveCappedBuff("Clearcasting")
+    -- remove clearcasting buff on any spell cast that costs mana and doesn't target yourself
+    -- not perfect as buffs on others will remove but pretty good
+    local manaCost = GetSpellRecField(spellId, "manaCost")
+    if manaCost and manaCost > 0 then
+      RemoveCappedBuff("Clearcasting")
+    end
   end
 end
-
--- Channeled spells to ignore in SPELL_GO_SELF (handled by SPELL_CHANNEL_START instead)
-local SpellGoIgnoredSpells = {
-  [7268] = true, -- Arcane Missiles Rank 1
-  [7269] = true, -- Arcane Missiles Rank 2
-  [7270] = true, -- Arcane Missiles Rank 3
-  [8419] = true, -- Arcane Missiles Rank 4
-  [8418] = true, -- Arcane Missiles Rank 5
-  [10273] = true, -- Arcane Missiles Rank 6
-  [10274] = true, -- Arcane Missiles Rank 7
-  [25346] = true, -- Arcane Missiles Rank 8
-}
 
 -- Frame for SPELL_GO_SELF event
 local SpellGoSelfFrame = CreateFrame("Frame", "DoitePlayerAuras_SpellGoSelf")
 SpellGoSelfFrame:SetScript("OnEvent", function()
   local spellId = arg2
-  if SpellGoIgnoredSpells[spellId] then
-    return
-  end
-
   local casterGUID = arg3
   local targetGUID = arg4
   ProcessBuffCappedSpell(spellId, casterGUID, targetGUID)
