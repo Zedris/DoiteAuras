@@ -1137,9 +1137,9 @@ testAllBtn:SetPoint("TOPLEFT", listContainer, "BOTTOMLEFT", 0, -4)
 
 local function _DA_UpdateTestAllButton()
     if _G["DoiteAuras_TestAll"] == true then
-        testAllBtn:SetText("Stop Test")
+        testAllBtn:SetText("STOP TEST")
     else
-        testAllBtn:SetText("Test all")
+        testAllBtn:SetText("TEST ALL")
     end
 end
 
@@ -2413,7 +2413,7 @@ local function RefreshList()
                 end
 
                 hdr.fixedCheck:ClearAllPoints()
-                hdr.fixedCheck:SetPoint("RIGHT", rightAnchor, "LEFT", rightPointX, 0)
+                hdr.fixedCheck:SetPoint("RIGHT", rightAnchor, "LEFT", -35, 0)
 
                 hdr.sortTime:ClearAllPoints()
                 hdr.sortTime:SetPoint("RIGHT", hdr.fixedCheck, "LEFT", -30, 0)
