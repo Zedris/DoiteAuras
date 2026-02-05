@@ -119,7 +119,7 @@ _daSpellTex:SetScript("OnEvent", function()
 end)
 
 -- Title-case function with exceptions for small words (keeps first word capitalized)
--- Special-case Roman numerals like "II", "IV", "VIII", "X" so they stay fully uppercase.
+-- Special-case Roman numerals like "II", "IV", "VIII", "X" so they stay fully uppercase. Also: if a letter appears directly after ".", keep it capital (fixes "R.O.I.D.S." => "R.O.I.D.S.").
 local function TitleCase(str)
     if not str then return "" end
     str = tostring(str)
@@ -144,6 +144,46 @@ local function TitleCase(str)
         return true
     end
 
+    -- Lowercase letters normally, BUT uppercase any letter that is:
+    --  - the first character (when capFirst is true)
+    --  - immediately after a '.'
+    local function DotAwareCase(core, capFirst)
+        if not core or core == "" then
+            return ""
+        end
+
+        local out = ""
+        local i, n = 1, string.len(core)
+
+        while i <= n do
+            local ch = string.sub(core, i, i)
+
+            -- Determine if ch is a letter (A-Z / a-z)
+            if string.find(ch, "%a") then
+                if i == 1 then
+                    if capFirst then
+                        out = out .. string.upper(ch)
+                    else
+                        out = out .. string.lower(ch)
+                    end
+                else
+                    local prev = string.sub(core, i-1, i-1)
+                    if prev == "." then
+                        out = out .. string.upper(ch)
+                    else
+                        out = out .. string.lower(ch)
+                    end
+                end
+            else
+                out = out .. ch
+            end
+
+            i = i + 1
+        end
+
+        return out
+    end
+
     local result, first = "", true
 
     for word in string.gfind(str, "%S+") do
@@ -154,8 +194,6 @@ local function TitleCase(str)
 
         local lowerCore = string.lower(core or "")
         local upperCore = string.upper(core or "")
-        local c         = string.sub(core or "", 1, 1) or ""
-        local rest      = string.sub(core or "", 2) or ""
 
         -- 1) Roman numerals: keep them fully uppercase, everywhere
         if IsRomanNumeralToken(core) then
@@ -163,20 +201,20 @@ local function TitleCase(str)
             first = false
 
         else
-            -- 2) Normal title-case rules
+            -- 2) Normal title-case rules (dot-aware)
             if first then
                 -- Always capitalize the very first word
-                result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                result = result .. leading .. DotAwareCase(core, true) .. " "
                 first = false
             else
                 if startsParen then
                     -- First word inside parentheses: force-capitalize regardless of exceptions
-                    result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                    result = result .. leading .. DotAwareCase(core, true) .. " "
                 elseif exceptions[lowerCore] then
-                    -- Normal small-word behavior
+                    -- Normal small-word behavior (kept lower)
                     result = result .. lowerCore .. " "
                 else
-                    result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+                    result = result .. leading .. DotAwareCase(core, true) .. " "
                 end
             end
         end

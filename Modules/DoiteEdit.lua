@@ -1131,6 +1131,18 @@ local function AuraCond_TitleCase(str)
     return true
   end
 
+  local function DotAwareLowerRest(rest)
+    if not rest or rest == "" then
+      return ""
+    end
+    rest = string.lower(rest)
+    -- Uppercase any letter directly after a dot
+    rest = string.gsub(rest, "%.(%a)", function(a)
+      return "." .. string.upper(a)
+    end)
+    return rest
+  end
+
   local result, first = "", true
   local word
   for word in string.gfind(str, "%S+") do
@@ -1150,15 +1162,15 @@ local function AuraCond_TitleCase(str)
     else
       -- 2) Normal title-case rules
       if first then
-        result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+        result = result .. leading .. string.upper(c) .. DotAwareLowerRest(rest) .. " "
         first = false
       else
         if startsParen then
-          result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+          result = result .. leading .. string.upper(c) .. DotAwareLowerRest(rest) .. " "
         elseif exceptions[lowerCore] then
           result = result .. lowerCore .. " "
         else
-          result = result .. leading .. string.upper(c) .. string.lower(rest) .. " "
+          result = result .. leading .. string.upper(c) .. DotAwareLowerRest(rest) .. " "
         end
       end
     end
