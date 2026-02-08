@@ -17,7 +17,7 @@ _Please respect the license note._
 - Custom "and/or () logic" extra conditional builder for a more precise tracking
 - Custom dynamic time-tracking and ownership system for auras on the target
 - Custom icon glow visual effect, inspired by later clients
-- Custom animations for "soon of CD" (abilities)
+- Custom animations for "soon off CD" (abilities)
 - Custom dynamic and static grouping system, collapsing towards a relative point or fixed
 - More to come.. _(bars, mouseover support, more features, setting options, skins)_
 
@@ -30,7 +30,7 @@ _Timestamps are available in the description._
 - `/da` or `/doite` or `/doiteauras`
 
 ## Shared exported builds (for inspiration or use)
-- Warrior [all stances]: [**LINK**](https://pastecode.io/s/m0635dub)
+- Warrior [all stances]: [**LINK**](https://pastecode.io/s/2mg0y7gx)
 - Druid [all forms]: [**LINK**](https://pastecode.io/s/g7bhkpjn)
 - Paladin [Seal Tracker]: [**LINK**](https://pastecode.io/s/b3ikammv)
 - Kara40 Boss Debuffs: [**LINK**](https://pastecode.io/s/473z2tgz)
@@ -55,5 +55,5 @@ This project is free and built with care in my spare time. Tips are 100% optiona
 Addon made by Doite, while all extensions of the 1.12/LUA 5.0 API by mentioned links at the top of this description. Contact me in-game, github via "Issues", or via Discord if something is wrong with __the addon__.
 You can check out my other addon here: [Tactica](https://github.com/Player-Doite/tactica) (_a raid helper for raid-leaders, including auto-building raids, auto-invite, posting tactics, assigning roles in raid roster and more_).
 
-## Thanks to all fellow addon developers - while a special thank you to:
+## Thanks to all fellow addon developers - a special thank you to:
 See contributors.
